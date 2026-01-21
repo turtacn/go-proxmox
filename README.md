@@ -444,19 +444,9 @@ go-proxmox is designed for production workloads. Key performance metrics:
 
 ---
 
-## Contributing
 
-We welcome contributions from the community! go-proxmox is designed to be contributor-friendly.
 
-### How to Contribute
-
-1. **Fork** the repository
-2. **Create** a feature branch (`git checkout -b feature/amazing-feature`)
-3. **Commit** your changes (`git commit -m 'Add amazing feature'`)
-4. **Push** to the branch (`git push origin feature/amazing-feature`)
-5. **Open** a Pull Request
-
-### Development Setup
+## Development Setup
 
 ```bash
 # Clone your fork
@@ -527,6 +517,5 @@ go-proxmox stands on the shoulders of giants:
   <br><br>
   <a href="https://github.com/turtacn/go-proxmox/stargazers">Star us on GitHub</a>
 </div>
-```
 
 ---
