@@ -471,7 +471,7 @@ make build-dev
 ## Documentation
 
 * [Architecture Guide](docs/architecture.md) - Detailed system architecture
-* [API Reference](docs/apis.md) - REST and gRPC API documentation
+* [API Reference](docs/api-reference.md) - REST and gRPC API documentation
 * [Operations Guide](docs/operations.md) - Deployment and operations
 * [Development Guide](docs/development.md) - Contributing and development setup
 

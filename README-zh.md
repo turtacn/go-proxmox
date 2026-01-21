@@ -446,7 +446,7 @@ make build-dev
 ## 文档
 
 * [架构指南](docs/architecture.md) - 详细系统架构
-* [API 参考](docs/apis.md) - REST 和 gRPC API 文档
+* [API 参考](docs/api-reference.md) - REST 和 gRPC API 文档
 * [运维指南](docs/operations.md) - 部署与运维
 * [开发指南](docs/development.md) - 贡献与开发设置
 
