@@ -41,37 +41,28 @@
 
 ### 核心差异化优势
 
-```
+```mermaid
+graph LR
+    %% go-proxmox 优势总体结构图
+    %% 模块命名规则：大写缩写[中文名称（英文术语）]
 
-┌─────────────────────────────────────────────────────────────────┐
-│                    go-proxmox 优势                              │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  1. 统一抽象                                                     │
-│     VM 和 vCluster 共享相同的 Guest 接口                          │
-│     通用的调度、存储、网络语义                                     │
-│                                                                 │
-│  2. 单二进制部署                                                  │
-│     从边缘到数据中心的一致体验                                     │
-│     基本运行零外部依赖                                            │
-│                                                                 │
-│  3. 声明式优先 API                                               │
-│     GitOps 就绪，Kubernetes 风格资源                              │
-│     与 Proxmox 生态完全兼容的 REST API                            │
-│                                                                 │
-│  4. 可插拔运行时                                                  │
-│     QEMU/KVM、Firecracker、containerd                           │
-│     按工作负载选择隔离级别                                         │
-│                                                                 │
-│  5. 内置可观测性                                                  │
-│     原生 OpenTelemetry，eBPF 驱动的深度洞察                       │
-│     统一的日志、指标、追踪                                         │
-│                                                                 │
-│  6. AI 就绪架构                                                   │
-│     针对推理工作负载优化                                          │
-│     原生 Agent/A2A 编排支持                                       │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
+    subgraph GP[go-proxmox 优势（Advantages）]
+        A1[1. 统一抽象<br/>VM 与 vCluster 共享相同 Guest 接口<br/>通用调度、存储、网络语义]
+        A2[2. 单二进制部署<br/>从边缘到数据中心的一致体验<br/>基本运行零外部依赖]
+        A3[3. 声明式优先 API<br/>GitOps 就绪，Kubernetes 风格资源<br/>兼容 Proxmox 生态的 REST API]
+        A4[4. 可插拔运行时<br/>支持 QEMU/KVM、Firecracker、containerd<br/>按工作负载选择隔离级别]
+        A5[5. 内置可观测性<br/>原生 OpenTelemetry<br/>eBPF 驱动的日志、指标、追踪]
+        A6[6. AI 就绪架构<br/>面向推理工作负载优化<br/>原生 Agent/A2A 编排支持]
+    end
+
+    %% 结构关系：统一由 go-proxmox 核心能力支撑
+    CORE[go-proxmox 核心架构（Core Architecture）]
+    CORE --> A1
+    CORE --> A2
+    CORE --> A3
+    CORE --> A4
+    CORE --> A5
+    CORE --> A6
 
 ```
 
@@ -466,7 +457,7 @@ make build-dev
 go-proxmox 采用 [Apache License 2.0](LICENSE) 许可证。
 
 ```
-Copyright 2024 The go-proxmox Authors
+Copyright 2026 The go-proxmox Authors
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
