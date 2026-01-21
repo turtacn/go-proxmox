@@ -512,6 +512,12 @@ go-proxmox stands on the shoulders of giants:
 
 ---
 
+## References
+
+* [https://github.com/turtacn/open-vcluster-api](https://github.com/turtacn/open-vcluster-api)
+
+---
+
 <div align="center">
   <b>Built with passion for the cloud-native infrastructure community</b>
   <br><br>

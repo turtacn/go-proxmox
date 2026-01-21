@@ -471,7 +471,6 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ```
-
 ---
 
 ## 致谢
@@ -486,6 +485,11 @@ go-proxmox 站在巨人的肩膀上：
 
 ---
 
+## 参考
+
+* [https://github.com/turtacn/open-vcluster-api](https://github.com/turtacn/open-vcluster-api)
+
+---
 <div align="center">
   <b>为云原生基础设施社区倾情打造</b>
   <br><br>
