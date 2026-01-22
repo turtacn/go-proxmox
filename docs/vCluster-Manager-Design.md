@@ -1,4 +1,3 @@
-````markdown
 # vCluster & Kubernetes Manager Design
 
 > **Document Version**: 1.0.0
@@ -6791,7 +6790,6 @@ manager.RegisterProvider("custom-k8s", &MyCustomProvider{})
 *Last Updated: 2024-01*
 *Authors: GPVE Team*
 
-```
 
 ---
 
@@ -6807,6 +6805,3 @@ manager.RegisterProvider("custom-k8s", &MyCustomProvider{})
 8. **测试策略** - 单元测试、集成测试、E2E测试
 9. **性能优化** - 扩展目标、优化策略
 10. **故障排查** - 常见问题、调试命令
-
-需要我继续输出其他文档吗？
-```
