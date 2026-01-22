@@ -623,118 +623,204 @@ end
 ### 5. Network Subsystem
 
 ```mermaid
+graph TB
+    %% 网络子系统架构图
+    %% 展示从网络管理器到物理网络层、SDN层的完整网络拓扑
+    
+    subgraph NS[网络子系统（Network Subsystem）]
+        direction TB
+        
+        subgraph NM[网络管理器（Network Manager）]
+            direction LR
+            BM[网桥管理器（Bridge Manager）]
+            VM[VLAN管理器（VLAN Manager）]
+            FM[防火墙管理器（Firewall Manager）]
+        end
+        
+        subgraph NT[网络拓扑（Network Topology）]
+            direction TB
+            
+            subgraph PN[物理网络（Physical Network）]
+                direction LR
+                ETH0[eth0]
+                ETH1[eth1]
+                ETH2[eth2]
+            end
+            
+            BT[绑定/组队（Bond/Team）<br/>可选（Optional）]
+            
+            subgraph LB[Linux网桥（Linux Bridge）]
+                direction LR
+                VMBR0[vmbr0]
+                VMBR1[vmbr1]
+                VMBR2[vmbr2]
+            end
+            
+            subgraph VL[虚拟网络层（Virtual Layer）]
+                direction LR
+                VMNIC[虚拟机网卡（VM NICs）<br/>tap/veth]
+                VLAN[VLAN中继（VLAN Trunk）<br/>.10 .20]
+                VC[虚拟集群网络（vCluster Network）]
+            end
+            
+            ETH0 --> BT
+            ETH1 --> BT
+            ETH2 --> BT
+            BT --> VMBR0
+            BT --> VMBR1
+            BT --> VMBR2
+            VMBR0 --> VMNIC
+            VMBR1 --> VLAN
+            VMBR2 --> VC
+        end
+        
+        subgraph SDN[软件定义网络层（SDN Layer）]
+            direction LR
+            VXLAN[VXLAN覆盖网络（VXLAN Overlay）]
+            EVPN[EVPN网络架构（EVPN Fabric）]
+            BGP[BGP对等互联（BGP Peering）]
+        end
+        
+        BM --> PN
+        VM --> PN
+        FM --> PN
+        
+        NT -.-> SDN
+    end
+    
+    style BM fill:#e1f5ff,stroke:#01579b,stroke-width:2px
+    style VM fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
+    style FM fill:#fff3e0,stroke:#e65100,stroke-width:2px
+    style PN fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px
+    style BT fill:#fce4ec,stroke:#880e4f,stroke-width:2px
+    style LB fill:#e0f2f1,stroke:#004d40,stroke-width:2px
+    style VL fill:#fff9c4,stroke:#f57f17,stroke-width:2px
+    style SDN fill:#f1f8e9,stroke:#33691e,stroke-width:2px
+    style VXLAN fill:#e8eaf6,stroke:#1a237e,stroke-width:2px
+    style EVPN fill:#fce4ec,stroke:#880e4f,stroke-width:2px
+    style BGP fill:#fff3e0,stroke:#e65100,stroke-width:2px
+    style NM fill:#f5f5f5,stroke:#424242,stroke-width:3px
+    style NT fill:#f5f5f5,stroke:#424242,stroke-width:3px
+    style NS fill:#ffffff,stroke:#000000,stroke-width:4px
 
 ```
 
 #### Firewall Architecture
 
 ```mermaid
-┌─────────────────────────────────────────────────────────────────┐
-│                    Firewall Architecture                        │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  ┌───────────────────────────────────────────────────────────┐  │
-│  │                   Rule Hierarchy                          │  │
-│  │                                                           │  │
-│  │    ┌─────────────────────────────────────────────┐       │  │
-│  │    │          Datacenter Rules                   │       │  │
-│  │    │         (Global policies)                   │       │  │
-│  │    └────────────────────┬────────────────────────┘       │  │
-│  │                         │                                 │  │
-│  │    ┌────────────────────┴────────────────────────┐       │  │
-│  │    │           Cluster Rules                     │       │  │
-│  │    │        (Cluster-wide policies)              │       │  │
-│  │    └────────────────────┬────────────────────────┘       │  │
-│  │                         │                                 │  │
-│  │    ┌────────────────────┴────────────────────────┐       │  │
-│  │    │           Node Rules                        │       │  │
-│  │    │         (Host firewall)                     │       │  │
-│  │    └────────────────────┬────────────────────────┘       │  │
-│  │                         │                                 │  │
-│  │    ┌────────────────────┴────────────────────────┐       │  │
-│  │    │         Guest Rules                         │       │  │
-│  │    │     (Per-VM/vCluster firewall)              │       │  │
-│  │    └─────────────────────────────────────────────┘       │  │
-│  │                                                           │  │
-│  └───────────────────────────────────────────────────────────┘  │
-│                                                                 │
-│  Implementation: nftables with automatic rule generation        │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
+graph TB
+    %% 防火墙架构层级图
+    %% 展示从数据中心到虚拟机的四层防火墙规则层级
+    
+    subgraph FA[防火墙架构（Firewall Architecture）]
+        direction TB
+        
+        subgraph RH[规则层级（Rule Hierarchy）]
+            direction TB
+            
+            DR[数据中心规则（Datacenter Rules）<br/>全局策略（Global Policies）]
+            CR[集群规则（Cluster Rules）<br/>集群级策略（Cluster-wide Policies）]
+            NR[节点规则（Node Rules）<br/>主机防火墙（Host Firewall）]
+            GR[虚拟机规则（Guest Rules）<br/>单虚拟机/虚拟集群防火墙（Per-VM/vCluster Firewall）]
+            
+            DR --> CR
+            CR --> NR
+            NR --> GR
+        end
+        
+        IMPL[实现方式（Implementation）:<br/>nftables 自动规则生成<br/>（nftables with automatic rule generation）]
+        
+        RH -.-> IMPL
+    end
+    
+    style DR fill:#e1f5ff,stroke:#01579b,stroke-width:2px
+    style CR fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
+    style NR fill:#fff3e0,stroke:#e65100,stroke-width:2px
+    style GR fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px
+    style IMPL fill:#fce4ec,stroke:#880e4f,stroke-width:2px,stroke-dasharray: 5 5
+    style RH fill:#f5f5f5,stroke:#424242,stroke-width:3px
+    style FA fill:#ffffff,stroke:#000000,stroke-width:4px
+
 ```
 
 ### 6. Cluster & HA Subsystem
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    Cluster & HA Subsystem                       │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  ┌───────────────────────────────────────────────────────────┐  │
-│  │                   Cluster Manager                         │  │
-│  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐       │  │
-│  │  │    Node     │  │  Quorum     │  │  Config     │       │  │
-│  │  │  Registry   │  │  Manager    │  │  Sync       │       │  │
-│  │  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘       │  │
-│  └─────────┼────────────────┼────────────────┼───────────────┘  │
-│            │                │                │                  │
-│            ▼                ▼                ▼                  │
-│  ┌───────────────────────────────────────────────────────────┐  │
-│  │                   Cluster Topology                        │  │
-│  │                                                           │  │
-│  │    ┌─────────┐     ┌─────────┐     ┌─────────┐           │  │
-│  │    │  Node1  │◀───▶│  Node2  │◀───▶│  Node3  │           │  │
-│  │    │(Leader) │     │(Follower│     │(Follower│           │  │
-│  │    └────┬────┘     └────┬────┘     └────┬────┘           │  │
-│  │         │               │               │                 │  │
-│  │         └───────────────┴───────────────┘                 │  │
-│  │                         │                                 │  │
-│  │    ┌────────────────────┴────────────────────────┐       │  │
-│  │    │              etcd Cluster                   │       │  │
-│  │    │         (Raft-based consensus)              │       │  │
-│  │    └─────────────────────────────────────────────┘       │  │
-│  │                                                           │  │
-│  └───────────────────────────────────────────────────────────┘  │
-│                                                                 │
-│  ┌───────────────────────────────────────────────────────────┐  │
-│  │                   HA Controller                           │  │
-│  │                                                           │  │
-│  │    ┌─────────────────────────────────────────────┐       │  │
-│  │    │             Health Monitoring               │       │  │
-│  │    │  • Node heartbeat (1s interval)            │       │  │
-│  │    │  • Guest health checks                     │       │  │
-│  │    │  • Storage reachability                    │       │  │
-│  │    │  • Network connectivity                    │       │  │
-│  │    └─────────────────────────────────────────────┘       │  │
-│  │                         │                                 │  │
-│  │                         ▼                                 │  │
-│  │    ┌─────────────────────────────────────────────┐       │  │
-│  │    │             Failure Detection               │       │  │
-│  │    │  • Timeout: 30s (configurable)             │       │  │
-│  │    │  • Quorum-based decision                   │       │  │
-│  │    │  • Split-brain prevention                  │       │  │
-│  │    └─────────────────────────────────────────────┘       │  │
-│  │                         │                                 │  │
-│  │                         ▼                                 │  │
-│  │    ┌─────────────────────────────────────────────┐       │  │
-│  │    │               Fencing                       │       │  │
-│  │    │  • IPMI/BMC power control                  │       │  │
-│  │    │  • PDU-based fencing                       │       │  │
-│  │    │  • Storage-based fencing (SCSI PR)         │       │  │
-│  │    │  • Watchdog timer                          │       │  │
-│  │    └─────────────────────────────────────────────┘       │  │
-│  │                         │                                 │  │
-│  │                         ▼                                 │  │
-│  │    ┌─────────────────────────────────────────────┐       │  │
-│  │    │              Recovery                       │       │  │
-│  │    │  • Guest restart on healthy node           │       │  │
-│  │    │  • Respect resource constraints            │       │  │
-│  │    │  • Maintain HA group affinity              │       │  │
-│  │    └─────────────────────────────────────────────┘       │  │
-│  │                                                           │  │
-│  └───────────────────────────────────────────────────────────┘  │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TB
+    %% 集群与高可用子系统架构图
+    %% 展示集群管理、拓扑结构和高可用控制器的完整流程
+    
+    subgraph CHA[集群与高可用子系统（Cluster & HA Subsystem）]
+        direction TB
+        
+        subgraph CM[集群管理器（Cluster Manager）]
+            direction LR
+            NR[节点注册表（Node Registry）]
+            QM[仲裁管理器（Quorum Manager）]
+            CS[配置同步（Config Sync）]
+        end
+        
+        subgraph CT[集群拓扑（Cluster Topology）]
+            direction TB
+            
+            subgraph NODES[节点集群（Node Cluster）]
+                direction LR
+                N1[节点1（Node1）<br/>领导者（Leader）]
+                N2[节点2（Node2）<br/>追随者（Follower）]
+                N3[节点3（Node3）<br/>追随者（Follower）]
+                
+                N1 <-.-> N2
+                N2 <-.-> N3
+                N3 <-.-> N1
+            end
+            
+            ETCD[etcd集群（etcd Cluster）<br/>基于Raft的共识（Raft-based consensus）]
+            
+            N1 --> ETCD
+            N2 --> ETCD
+            N3 --> ETCD
+        end
+        
+        subgraph HAC[高可用控制器（HA Controller）]
+            direction TB
+            
+            HM[健康监控（Health Monitoring）<br/>• 节点心跳（1秒间隔）<br/>• 虚拟机健康检查<br/>• 存储可达性<br/>• 网络连通性]
+            
+            FD[故障检测（Failure Detection）<br/>• 超时：30秒（可配置）<br/>• 基于仲裁的决策<br/>• 脑裂预防]
+            
+            FENC[隔离机制（Fencing）<br/>• IPMI/BMC电源控制<br/>• PDU隔离<br/>• 存储隔离（SCSI PR）<br/>• 看门狗定时器]
+            
+            REC[恢复机制（Recovery）<br/>• 在健康节点重启虚拟机<br/>• 遵守资源约束<br/>• 维护HA组亲和性]
+            
+            HM --> FD
+            FD --> FENC
+            FENC --> REC
+        end
+        
+        NR --> CT
+        QM --> CT
+        CS --> CT
+        
+        CT -.-> HAC
+    end
+    
+    style NR fill:#e1f5ff,stroke:#01579b,stroke-width:2px
+    style QM fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
+    style CS fill:#fff3e0,stroke:#e65100,stroke-width:2px
+    style N1 fill:#c8e6c9,stroke:#1b5e20,stroke-width:3px
+    style N2 fill:#ffccbc,stroke:#bf360c,stroke-width:2px
+    style N3 fill:#ffccbc,stroke:#bf360c,stroke-width:2px
+    style ETCD fill:#e0f2f1,stroke:#004d40,stroke-width:2px
+    style HM fill:#fff9c4,stroke:#f57f17,stroke-width:2px
+    style FD fill:#f8bbd0,stroke:#880e4f,stroke-width:2px
+    style FENC fill:#ffccbc,stroke:#e64a19,stroke-width:2px
+    style REC fill:#c5e1a5,stroke:#558b2f,stroke-width:2px
+    style CM fill:#f5f5f5,stroke:#424242,stroke-width:3px
+    style CT fill:#f5f5f5,stroke:#424242,stroke-width:3px
+    style HAC fill:#f5f5f5,stroke:#424242,stroke-width:3px
+    style NODES fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+    style CHA fill:#ffffff,stroke:#000000,stroke-width:4px
+
 ```
 
 ### 7. API Subsystem
