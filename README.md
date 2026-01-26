@@ -1,18 +1,17 @@
 <div align="center">
-  <!--
-  <img src="logo.png" alt="go-proxmox Logo" width="200" height="200">
-  -->
+
+  <!--<img src="logo.png" alt="go-proxmox Logo" width="200" height="200">-->
   
   # go-proxmox
   
-  **Cloud-Native Infrastructure Runtime for Hybrid Workloads**
+  **The Cloud-Native Unified Compute Platform for VMs and Virtual Kubernetes Clusters**
   
   [![Build Status](https://img.shields.io/github/actions/workflow/status/turtacn/go-proxmox/ci.yml?branch=main&style=flat-square)](https://github.com/turtacn/go-proxmox/actions)
-  [![Go Version](https://img.shields.io/badge/go-%3E%3D1.22-blue?style=flat-square)](https://go.dev/)
-  [![License](https://img.shields.io/badge/license-Apache%202.0-green?style=flat-square)](LICENSE)
+  [![Go Version](https://img.shields.io/github/go-mod/go-version/turtacn/go-proxmox?style=flat-square)](https://go.dev/)
+  [![License](https://img.shields.io/badge/license-EPL--2.0-blue?style=flat-square)](LICENSE)
   [![Go Report Card](https://goreportcard.com/badge/github.com/turtacn/go-proxmox?style=flat-square)](https://goreportcard.com/report/github.com/turtacn/go-proxmox)
-  [![Documentation](https://img.shields.io/badge/docs-architecture-orange?style=flat-square)](docs/architecture.md)
-  [![Release](https://img.shields.io/github/v/release/turtacn/go-proxmox?style=flat-square)](https://github.com/turtacn/go-proxmox/releases)
+  [![Documentation](https://img.shields.io/badge/docs-architecture-green?style=flat-square)](docs/architecture.md)
+  [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg?style=flat-square)](CONTRIBUTING.md)
   
   [English](README.md) | [中文](README-zh.md)
   
@@ -22,9 +21,9 @@
 
 ## Mission Statement
 
-**go-proxmox** is a next-generation infrastructure runtime that reimagines virtualization management for the cloud-native era. By rebuilding Proxmox VE's core capabilities in Go, we deliver a unified compute plane where **Virtual Machines** and **vClusters** (lightweight Virtual Kubernetes) are treated as **equal first-class citizens**.
+**go-proxmox** is a modern, Golang-based reimplementation of Proxmox VE's core virtualization capabilities, designed to unify traditional Virtual Machines (VMs) and lightweight Virtual Kubernetes Clusters (vCluster/VC) as first-class compute resources within a single, coherent management plane.
 
-Our goal is to bridge the gap between traditional virtualization and cloud-native workloads, enabling organizations to run VMs, containers, and AI workloads on a single, coherent platform—from edge devices to data center scale.
+We preserve the battle-tested philosophy of Proxmox VE—**direct hardware control, minimal dependencies, no libvirt abstraction**—while addressing the emerging demands of cloud-native workloads, multi-tenant isolation, and AI/ML infrastructure.
 
 ---
 
@@ -32,175 +31,95 @@ Our goal is to bridge the gap between traditional virtualization and cloud-nativ
 
 ### Industry Pain Points We Address
 
-| Challenge | Traditional Solutions | go-proxmox Approach |
-|-----------|----------------------|---------------------|
-| **Fragmented Tooling** | Separate management for VMs vs. Kubernetes | Unified API and lifecycle management |
-| **Complex Operations** | Multiple control planes, inconsistent UX | Single binary, consistent experience |
-| **Resource Inefficiency** | Over-provisioning due to isolation boundaries | Shared resource pools with fine-grained isolation |
-| **Slow Deployment** | Heavy VM-based Kubernetes clusters | vCluster starts in seconds, not minutes |
-| **Lock-in Risk** | Proprietary hyperconverged platforms | Open-source, pluggable architecture |
-| **AI Workload Gap** | Legacy platforms lack AI/Agent optimization | Native support for AI inference and Agentic workloads |
+| Pain Point | Traditional Approach | go-proxmox Solution |
+|------------|---------------------|---------------------|
+| **VM-Container Dichotomy** | Separate management planes, inconsistent APIs | Unified resource model with shared storage/network abstractions |
+| **Kubernetes Complexity** | Heavy overhead for small/medium workloads | Native vCluster with embedded SQLite, sub-minute provisioning |
+| **Multi-Tenancy Gaps** | Namespace-only isolation, shared control plane | Per-tenant independent apiserver, hardware-level data plane isolation |
+| **AI Workload Support** | Manual GPU passthrough, no native scheduling | First-class GPU/TPU resources, AI-optimized placement strategies |
+| **Operational Burden** | Multiple binaries, complex configuration | Single binary deployment, declarative YAML configuration |
+| **Vendor Lock-in** | Proprietary APIs, opaque implementations | Open source, Proxmox-compatible REST API |
 
 ### Key Differentiators
 
 ```
 
-┌─────────────────────────────────────────────────────────────────┐
-│                    go-proxmox Advantages                        │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  1. UNIFIED ABSTRACTION                                         │
-│     VM and vCluster share the same Guest interface              │
-│     Common scheduling, storage, network semantics               │
-│                                                                 │
-│  2. SINGLE BINARY DEPLOYMENT                                    │
-│     Edge to datacenter with identical experience                │
-│     Zero external dependencies for basic operation              │
-│                                                                 │
-│  3. DECLARATIVE-FIRST API                                       │
-│     GitOps-ready, Kubernetes-style resources                    │
-│     Full REST compatibility with Proxmox ecosystem              │
-│                                                                 │
-│  4. PLUGGABLE RUNTIMES                                          │
-│     QEMU/KVM, Firecracker, containerd                           │
-│     Choose isolation level per workload                         │
-│                                                                 │
-│  5. OBSERVABILITY BUILT-IN                                      │
-│     OpenTelemetry native, eBPF-powered insights                 │
-│     Unified logs, metrics, traces                               │
-│                                                                 │
-│  6. AI-READY ARCHITECTURE                                       │
-│     Optimized for inference workloads                           │
-│     Native Agent/A2A orchestration support                      │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         go-proxmox Architecture                              │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────────────┐  │
+│  │   VirtualMachine │    │  VirtualCluster  │    │   AI/GPU Workloads     │  │
+│  │   (QEMU/KVM)     │    │  (vCluster VC)   │    │   (Passthrough/vGPU)   │  │
+│  └────────┬────────┘    └────────┬────────┘    └───────────┬─────────────┘  │
+│           │                      │                         │                 │
+│           └──────────────────────┼─────────────────────────┘                 │
+│                                  ▼                                           │
+│  ┌───────────────────────────────────────────────────────────────────────┐  │
+│  │                    Unified Resource Manager                            │  │
+│  │     • Shared State Machine  • Common Quota Model  • Unified Events     │  │
+│  └───────────────────────────────────────────────────────────────────────┘  │
+│           │                      │                         │                 │
+│           ▼                      ▼                         ▼                 │
+│  ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────────────┐  │
+│  │ Storage Plugins  │    │ Network Plugins  │    │   Scheduler Engine     │  │
+│  │ ZFS/LVM/Ceph/NFS │    │ Bridge/VLAN/SDN  │    │   HA/Utilization/GPU   │  │
+│  └─────────────────┘    └─────────────────┘    └─────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────────────────┘
 
-```
+````
 
 ---
 
 ## Key Features
 
-### Core Capabilities
+### Compute Resources
 
-- **VM Management**: Full QEMU/KVM lifecycle (create, start, stop, migrate, snapshot, clone)
-- **vCluster Support**: Lightweight Kubernetes clusters with hardware-level isolation
-- **Live Migration**: Zero-downtime VM and vCluster migration across nodes
-- **High Availability**: Automatic failover with configurable fencing strategies
-- **Storage Abstraction**: Pluggable drivers for LVM, ZFS, Ceph, NFS
-- **Network Management**: Linux Bridge, VLAN, SDN with nftables firewall
+- **Virtual Machines (VM)**
+  - Direct QMP control over QEMU/KVM (no libvirt)
+  - Live/cold migration with shared/local storage
+  - Full lifecycle: create, snapshot, clone, GPU passthrough
+  - OVMF/SeaBIOS, Secure Boot, vTPM support
 
-### Enterprise Features
+- **Virtual Clusters (VC)** — *First-Class Tenant Resource*
+  - Independent Kubernetes control plane per tenant
+  - Tiered storage: embedded SQLite (dev) → external etcd (prod)
+  - Private Nodes mode with kubelet-in-netns for full conformance
+  - Runtime isolation: L1 (runc) → L2 (Kata) → L3 (QEMU microvm)
 
-- **Multi-tenancy**: Fine-grained RBAC with resource quotas
-- **Cluster Federation**: Manage multiple clusters from single control plane
-- **Backup Integration**: Compatible with Proxmox Backup Server protocol
-- **Audit Logging**: Immutable audit trail for compliance
+### Unified Infrastructure
 
-### AI & Cloud-Native
+- **Storage Abstraction**
+  - Single plugin interface for all content types
+  - Backends: Local, ZFS, LVM-thin, Ceph RBD, NFS, iSCSI
+  - Shared by VM disks, VC PersistentVolumes, backups, ISOs
 
-- **GPU Passthrough**: NVIDIA/AMD GPU support for AI inference
-- **vGPU Scheduling**: Share GPUs across multiple workloads
-- **Agent Orchestration**: Native support for AI Agent workflows
-- **Serverless Ready**: Fast cold-start for event-driven workloads
+- **Network Abstraction**
+  - Linux Bridge with VLAN/VXLAN support
+  - VM NICs and VC Pod networks on same infrastructure
+  - Cluster-wide nftables firewall synchronization
+
+### Enterprise Capabilities
+
+- **Multi-Tenancy**: RBAC, quotas (requests/limits/overcommit), audit logging
+- **High Availability**: Automatic failover, fencing, maintenance mode (cordon/drain)
+- **Observability**: Prometheus metrics, OpenTelemetry tracing, structured logging
+- **Security**: Secure Boot, TPM, immutable audit logs, nftables policies
 
 ---
 
-## Architecture Overview
+## Performance Benchmarks
 
-```mermaid
+go-proxmox is designed for production-grade performance:
 
-graph TD
-    %% 图例（Legend）：<br/>蓝色表示接口层，绿色表示管理/抽象层，灰色表示运行时与资源层
-
-    %% ========================
-    %% 接入层（Access Layer）
-    %% ========================
-    subgraph AL[接入层（Access Layer）]
-        A1[gpvectl<br/>命令行工具（CLI）]
-        A2[REST API<br/>兼容接口（Compatibility API）]
-        A3[gRPC API<br/>原生接口（Native API）]
-        A4[Web UI<br/>管理界面（Future）]
-    end
-
-    %% ========================
-    %% API 服务层（API Server Layer）
-    %% ========================
-    subgraph AS[API服务层（API Server Layer）]
-        B1[API服务器<br/>认证（Authentication）<br/>鉴权（Authorization）<br/>路由（Routing）]
-    end
-
-    %% ========================
-    %% 管理层（Management Layer）
-    %% ========================
-    subgraph ML[管理层（Management Layer）]
-        C1[虚拟机管理器<br/>（VM Manager）]
-        C2[虚拟集群管理器<br/>（vCluster Manager）]
-        C3[K8s-on-VM管理器<br/>（Kubernetes on VM Manager）]
-    end
-
-    %% ========================
-    %% 来宾抽象层（Guest Abstraction Layer）
-    %% ========================
-    subgraph GAL[来宾抽象层（Guest Abstraction Layer）]
-        D1[统一生命周期管理<br/>状态机（State Machine）<br/>事件（Events）]
-    end
-
-    %% ========================
-    %% 运行时层（Runtime Layer）
-    %% ========================
-    subgraph RL[运行时层（Runtime Layer）]
-        E1[QEMU运行时<br/>（QEMU Runtime）]
-        E2[containerd运行时<br/>（containerd Runtime）]
-        E3[Firecracker运行时<br/>（Firecracker Runtime）]
-    end
-
-    %% ========================
-    %% 资源层（Resource Layer）
-    %% ========================
-    subgraph RSL[资源层（Resource Layer）]
-        F1[存储<br/>（Storage）]
-        F2[网络<br/>（Network）]
-        F3[集群<br/>（Cluster）]
-        F4[高可用<br/>（HA）]
-        F5[可观测性<br/>（Observability）]
-    end
-
-    %% ========================
-    %% 业务流（Business Flow）
-    %% ========================
-    %% 1. 接入层到API服务层
-    A1 -->|1.1 请求提交| B1
-    A2 -->|1.2 请求提交| B1
-    A3 -->|1.3 请求提交| B1
-    A4 -->|1.4 请求提交| B1
-
-    %% 2. API服务层到管理层
-    B1 -->|2.1 调度与分发| C1
-    B1 -->|2.2 调度与分发| C2
-    B1 -->|2.3 调度与分发| C3
-
-    %% 3. 管理层到来宾抽象层
-    C1 -->|3.1 生命周期调用| D1
-    C2 -->|3.2 生命周期调用| D1
-    C3 -->|3.3 生命周期调用| D1
-
-    %% 4. 来宾抽象层到运行时层
-    D1 -->|4.1 实例运行| E1
-    D1 -->|4.2 实例运行| E2
-    D1 -->|4.3 实例运行| E3
-
-    %% 5. 运行时层依赖资源层
-    E1 -->|5.1 资源访问| F1
-    E1 -->|5.2 资源访问| F2
-    E2 -->|5.3 资源访问| F3
-    E3 -->|5.4 资源访问| F4
-    E3 -->|5.5 资源访问| F5
-
-
-````
-
-For detailed architecture documentation, see [docs/architecture.md](docs/architecture.md).
+| Benchmark | Target | Notes |
+|-----------|--------|-------|
+| VMs per Node | ≥500 | Standard configurations |
+| VCs per Node | ≥1000 | Small-spec virtual clusters |
+| Control Plane p99 Latency | <100ms | API operations |
+| VC Provisioning | <60s | Including control plane bootstrap |
+| Live Migration Downtime | <500ms | Shared storage, standard VM |
+| Oracle RAC Certification | Planned | Enterprise database workloads |
+| Kubernetes Conformance | 100% | CNCF certified distribution base |
 
 ---
 
@@ -208,98 +127,112 @@ For detailed architecture documentation, see [docs/architecture.md](docs/archite
 
 ### Prerequisites
 
-- Go 1.22 or later
-- Linux kernel 5.10+ with KVM support
-- QEMU 6.0+ (for VM runtime)
-- containerd 1.7+ (for vCluster runtime)
+- Linux kernel ≥5.15 with KVM support
+- Go 1.22+ (for building from source)
+- QEMU 8.0+ installed on target nodes
 
 ### Installation
 
-#### From Source
+**From Binary Releases:**
 
 ```bash
-# Clone the repository
+# Download latest release
+curl -LO https://github.com/turtacn/go-proxmox/releases/latest/download/gpve-linux-amd64.tar.gz
+tar xzf gpve-linux-amd64.tar.gz
+sudo mv gpve-server gpve-agent /usr/local/bin/
+
+# Initialize configuration
+gpve-server init --config /etc/gpve/config.yaml
+````
+
+**From Source:**
+
+```bash
+# Clone repository
 git clone https://github.com/turtacn/go-proxmox.git
 cd go-proxmox
 
 # Build all binaries
 make build
 
-# Install to system
+# Run tests
+make test
+
+# Install
 sudo make install
-````
-
-#### Using go install
-
-```bash
-# Install CLI tool
-go install github.com/turtacn/go-proxmox/cmd/gpvectl@latest
-
-# Install server (requires root for runtime operations)
-go install github.com/turtacn/go-proxmox/cmd/gpve-server@latest
-go install github.com/turtacn/go-proxmox/cmd/gpve-agent@latest
 ```
 
-#### Container Image
+**Using Go Install:**
 
 ```bash
-# Pull the official image
-docker pull ghcr.io/turtacn/go-proxmox:latest
-
-# Run the server
-docker run -d --privileged \
-  -v /var/run/libvirt:/var/run/libvirt \
-  -v /var/lib/gpve:/var/lib/gpve \
-  -p 8006:8006 \
-  ghcr.io/turtacn/go-proxmox:latest
+go install github.com/turtacn/go-proxmox/cmd/gpve-server@latest
+go install github.com/turtacn/go-proxmox/cmd/gpve-agent@latest
+go install github.com/turtacn/go-proxmox/cmd/gpvectl@latest
 ```
 
 ### Quick Start
 
-#### Initialize a Single-Node Cluster
+**1. Start the Server:**
 
 ```bash
-# Initialize the cluster
-gpvectl cluster init --name my-cluster
+# Initialize a new cluster
+gpve-server init --cluster-name my-cluster
 
-# Verify the node status
-gpvectl node list
+# Start server (foreground for testing)
+gpve-server run --config /etc/gpve/config.yaml
 ```
 
-#### Create Your First VM
+**2. Start Node Agent:**
 
 ```bash
-# Create a VM from a cloud image
-gpvectl vm create \
-  --name ubuntu-vm \
-  --cores 2 \
-  --memory 4096 \
-  --disk local:32G \
-  --cdrom local:iso/ubuntu-22.04.iso \
-  --net bridge=vmbr0
-
-# Start the VM
-gpvectl vm start ubuntu-vm
-
-# Check VM status
-gpvectl vm status ubuntu-vm
+# On each compute node
+gpve-agent join --server https://control-plane:8443 --token <bootstrap-token>
 ```
 
-#### Create a vCluster
+**3. Create Your First VM:**
 
 ```bash
-# Create a lightweight Kubernetes cluster
-gpvectl vcluster create \
-  --name dev-cluster \
-  --cores 4 \
-  --memory 8192 \
-  --k8s-version 1.29
+# Using CLI
+gpvectl vm create my-vm \
+  --cpu 4 \
+  --memory 8Gi \
+  --disk size=100Gi,storage=local-zfs \
+  --network bridge=vmbr0
+
+# Using declarative YAML
+cat <<EOF | gpvectl apply -f -
+apiVersion: gpve.io/v1
+kind: VirtualMachine
+metadata:
+  name: my-vm
+  namespace: default
+spec:
+  cpu:
+    cores: 4
+  memory:
+    size: 8Gi
+  disks:
+    - name: root
+      size: 100Gi
+      storage: local-zfs
+  networks:
+    - name: eth0
+      bridge: vmbr0
+EOF
+```
+
+**4. Create a Virtual Cluster:**
+
+```bash
+gpvectl vc create my-cluster \
+  --k8s-version 1.30 \
+  --control-plane-tier standard \
+  --worker-nodes 3 \
+  --isolation-level L2
 
 # Get kubeconfig
-gpvectl vcluster kubeconfig dev-cluster > ~/.kube/dev-cluster.yaml
-
-# Access the cluster
-export KUBECONFIG=~/.kube/dev-cluster.yaml
+gpvectl vc kubeconfig my-cluster > ~/.kube/my-cluster.yaml
+export KUBECONFIG=~/.kube/my-cluster.yaml
 kubectl get nodes
 ```
 
@@ -307,221 +240,374 @@ kubectl get nodes
 
 ## Usage Examples
 
-### Programmatic API Usage
+### VM Lifecycle Management
 
 ```go
 package main
 
 import (
     "context"
-    "fmt"
     "log"
 
     "github.com/turtacn/go-proxmox/pkg/client"
-    "github.com/turtacn/go-proxmox/pkg/guest/types"
+    "github.com/turtacn/go-proxmox/pkg/api/v1"
 )
 
 func main() {
-    // Create a client
-    c, err := client.New("https://localhost:8006", client.WithToken("your-api-token"))
+    // Create client
+    c, err := client.New("https://gpve-server:8443", client.WithToken("your-token"))
     if err != nil {
         log.Fatal(err)
     }
 
-    ctx := context.Background()
-
-    // Create a VM spec
-    vmSpec := &types.VMSpec{
-        Name:   "api-created-vm",
-        Cores:  2,
-        Memory: 4096,
-        Disks: []types.DiskSpec{
-            {Storage: "local", Size: "32G"},
+    // Define VM specification
+    vm := &v1.VirtualMachine{
+        ObjectMeta: v1.ObjectMeta{
+            Name:      "web-server",
+            Namespace: "production",
         },
-        Networks: []types.NetSpec{
-            {Bridge: "vmbr0", Model: "virtio"},
+        Spec: v1.VirtualMachineSpec{
+            CPU: v1.CPUSpec{
+                Cores:   4,
+                Sockets: 1,
+                Type:    "host",
+            },
+            Memory: v1.MemorySpec{
+                Size: "16Gi",
+            },
+            Disks: []v1.DiskSpec{
+                {
+                    Name:    "root",
+                    Size:    "100Gi",
+                    Storage: "ceph-pool",
+                    Boot:    true,
+                },
+            },
+            Networks: []v1.NetworkSpec{
+                {
+                    Name:   "eth0",
+                    Bridge: "vmbr0",
+                    VLAN:   100,
+                },
+            },
         },
     }
 
-    // Create the VM
-    vm, err := c.VMs().Create(ctx, vmSpec)
+    // Create VM
+    created, err := c.VirtualMachines("production").Create(context.Background(), vm)
     if err != nil {
         log.Fatal(err)
     }
-    fmt.Printf("Created VM: %s (ID: %d)\n", vm.Name, vm.ID)
+    log.Printf("VM created: %s (ID: %d)", created.Name, created.Status.VMID)
 
-    // Start the VM
-    if err := c.VMs().Start(ctx, vm.ID); err != nil {
+    // Start VM
+    if err := c.VirtualMachines("production").Start(context.Background(), "web-server"); err != nil {
         log.Fatal(err)
     }
-    fmt.Println("VM started successfully")
 
-    // List all guests (VMs + vClusters)
-    guests, err := c.Guests().List(ctx)
-    if err != nil {
+    // Live migrate to another node
+    if err := c.VirtualMachines("production").Migrate(context.Background(), "web-server", 
+        client.MigrateOptions{
+            TargetNode: "node-02",
+            Online:     true,
+        }); err != nil {
         log.Fatal(err)
-    }
-    for _, g := range guests {
-        fmt.Printf("Guest: %s, Type: %s, Status: %s\n", g.Name, g.Type, g.Status)
     }
 }
 ```
 
-### Declarative Configuration
+### Virtual Cluster Operations
 
-```yaml
-# vm-example.yaml
-apiVersion: gpve.io/v1
-kind: VirtualMachine
-metadata:
-  name: production-db
-  labels:
-    app: database
-    env: production
-spec:
-  cores: 8
-  memory: 32768
-  disks:
-    - storage: ceph-pool
-      size: 500G
-      cache: writeback
-  networks:
-    - bridge: vmbr0
-      vlan: 100
-      firewall: true
-  ha:
-    enabled: true
-    group: database-ha
----
-apiVersion: gpve.io/v1
-kind: VCluster
-metadata:
-  name: staging-k8s
-spec:
-  cores: 4
-  memory: 16384
-  kubernetes:
-    version: "1.29"
-    cni: flannel
-    features:
-      - metrics-server
-      - ingress-nginx
+```go
+package main
+
+import (
+    "context"
+    "log"
+
+    "github.com/turtacn/go-proxmox/pkg/client"
+    "github.com/turtacn/go-proxmox/pkg/api/v1"
+)
+
+func main() {
+    c, _ := client.New("https://gpve-server:8443", client.WithToken("your-token"))
+
+    // Create a virtual cluster for tenant
+    vc := &v1.VirtualCluster{
+        ObjectMeta: v1.ObjectMeta{
+            Name:      "tenant-alpha-cluster",
+            Namespace: "tenants",
+            Labels: map[string]string{
+                "tenant": "alpha",
+                "env":    "production",
+            },
+        },
+        Spec: v1.VirtualClusterSpec{
+            KubernetesVersion: "1.30.2",
+            ControlPlane: v1.ControlPlaneSpec{
+                Tier:         v1.ControlPlaneTierPerformance,
+                BackingStore: v1.BackingStoreEtcd,
+                Replicas:     3,
+            },
+            WorkerNodes: v1.WorkerNodesSpec{
+                Mode:  v1.WorkerModePrivate,
+                Count: 5,
+                Resources: v1.ResourceRequirements{
+                    Requests: v1.ResourceList{
+                        v1.ResourceCPU:    "2",
+                        v1.ResourceMemory: "4Gi",
+                    },
+                    Limits: v1.ResourceList{
+                        v1.ResourceCPU:    "4",
+                        v1.ResourceMemory: "8Gi",
+                    },
+                },
+            },
+            IsolationLevel: v1.IsolationLevelL2, // Kata Containers
+            Scheduling: v1.SchedulingSpec{
+                Strategy: v1.SchedulingStrategyHA,
+                AntiAffinity: &v1.AntiAffinitySpec{
+                    TopologyKey: "kubernetes.io/hostname",
+                },
+            },
+        },
+    }
+
+    created, err := c.VirtualClusters("tenants").Create(context.Background(), vc)
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // Wait for cluster to be ready
+    c.VirtualClusters("tenants").WaitForReady(context.Background(), created.Name)
+
+    // Get kubeconfig
+    kubeconfig, err := c.VirtualClusters("tenants").GetKubeconfig(context.Background(), created.Name)
+    if err != nil {
+        log.Fatal(err)
+    }
+    log.Printf("Kubeconfig:\n%s", kubeconfig)
+}
 ```
 
-```bash
-# Apply the configuration
-gpvectl apply -f vm-example.yaml
+### Storage Plugin Example
+
+```go
+package main
+
+import (
+    "context"
+    
+    "github.com/turtacn/go-proxmox/pkg/storage"
+    "github.com/turtacn/go-proxmox/pkg/storage/plugins/zfs"
+)
+
+func main() {
+    // Initialize ZFS storage backend
+    zfsBackend, err := zfs.New(zfs.Config{
+        PoolName:   "tank",
+        Dataset:    "gpve",
+        Mountpoint: "/tank/gpve",
+    })
+    if err != nil {
+        panic(err)
+    }
+
+    // Register with storage manager
+    mgr := storage.NewManager()
+    mgr.RegisterPlugin("local-zfs", zfsBackend)
+
+    // Create a volume for VM
+    vol, err := mgr.CreateVolume(context.Background(), "local-zfs", storage.VolumeSpec{
+        Name:        "vm-100-disk-0",
+        Size:        100 * 1024 * 1024 * 1024, // 100GiB
+        ContentType: storage.ContentTypeImage,
+        Format:      storage.FormatRaw,
+    })
+    if err != nil {
+        panic(err)
+    }
+
+    // Create snapshot
+    snap, err := mgr.CreateSnapshot(context.Background(), vol.ID, "before-upgrade")
+    if err != nil {
+        panic(err)
+    }
+    
+    _ = snap
+}
 ```
 
 ---
 
-## Benchmarks
+## Architecture Overview
 
-go-proxmox is designed for production workloads. Key performance metrics:
+For detailed architecture documentation, see [docs/architecture.md](docs/architecture.md).
 
-| Benchmark       | Metric     | go-proxmox | Reference      |
-| --------------- | ---------- | ---------- | -------------- |
-| VM Boot Time    | Cold start | < 3s       | QEMU baseline  |
-| vCluster Boot   | Pod-ready  | < 5s       | k3s standard   |
-| API Latency     | P99        | < 50ms     | Under load     |
-| Live Migration  | Downtime   | < 100ms    | 8GB VM         |
-| Guest Density   | Per node   | 200+       | Mixed workload |
-| Oracle RAC      | TPC-C      | Certified  | Enterprise DB  |
-| K8s Conformance | CNCF       | 100%       | v1.29          |
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                              go-proxmox Architecture                             │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  ┌────────────────────────────────────────────────────────────────────────────┐ │
+│  │                         Presentation Layer                                  │ │
+│  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐   │ │
+│  │  │   REST API    │  │   gRPC API   │  │   CLI Tool   │  │  Web UI (*)  │   │ │
+│  │  │  (Proxmox     │  │  (Internal   │  │  (gpvectl)   │  │  (Future)    │   │ │
+│  │  │   Compatible) │  │   Cluster)   │  │              │  │              │   │ │
+│  │  └──────────────┘  └──────────────┘  └──────────────┘  └──────────────┘   │ │
+│  └────────────────────────────────────────────────────────────────────────────┘ │
+│                                       │                                          │
+│  ┌────────────────────────────────────▼───────────────────────────────────────┐ │
+│  │                         Application Layer                                   │ │
+│  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐   │ │
+│  │  │ VM Service    │  │ VC Service   │  │ Storage Svc  │  │ Network Svc  │   │ │
+│  │  └──────────────┘  └──────────────┘  └──────────────┘  └──────────────┘   │ │
+│  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐   │ │
+│  │  │ Cluster Svc   │  │ HA Service   │  │ Task Service │  │ Auth Service │   │ │
+│  │  └──────────────┘  └──────────────┘  └──────────────┘  └──────────────┘   │ │
+│  └────────────────────────────────────────────────────────────────────────────┘ │
+│                                       │                                          │
+│  ┌────────────────────────────────────▼───────────────────────────────────────┐ │
+│  │                           Domain Layer                                      │ │
+│  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐   │ │
+│  │  │ VM Domain     │  │ VC Domain    │  │ Storage Dom  │  │ Network Dom  │   │ │
+│  │  │ (QMP/QEMU)    │  │ (vCluster)   │  │ (Plugins)    │  │ (Bridge/SDN) │   │ │
+│  │  └──────────────┘  └──────────────┘  └──────────────┘  └──────────────┘   │ │
+│  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐                     │ │
+│  │  │ Cluster Dom   │  │ Scheduler    │  │ State Machine│                     │ │
+│  │  │ (Consensus)   │  │ (Placement)  │  │ (Lifecycle)  │                     │ │
+│  │  └──────────────┘  └──────────────┘  └──────────────┘                     │ │
+│  └────────────────────────────────────────────────────────────────────────────┘ │
+│                                       │                                          │
+│  ┌────────────────────────────────────▼───────────────────────────────────────┐ │
+│  │                       Infrastructure Layer                                  │ │
+│  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐   │ │
+│  │  │ QMP Client    │  │ Storage APIs │  │ Network APIs │  │ Cluster Store│   │ │
+│  │  │ (QEMU)        │  │ (ZFS/LVM/...)│  │ (netlink)    │  │ (etcd/CRDT)  │   │ │
+│  │  └──────────────┘  └──────────────┘  └──────────────┘  └──────────────┘   │ │
+│  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐   │ │
+│  │  │ Metrics       │  │ Logging      │  │ Tracing      │  │ Audit Log    │   │ │
+│  │  │ (Prometheus)  │  │ (Structured) │  │ (OTel)       │  │ (Immutable)  │   │ │
+│  │  └──────────────┘  └──────────────┘  └──────────────┘  └──────────────┘   │ │
+│  └────────────────────────────────────────────────────────────────────────────┘ │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
 
 ---
 
-## Project Status
+## API Documentation
 
-| Phase                      | Status      | Description                                    |
-| -------------------------- | ----------- | ---------------------------------------------- |
-| Phase 0: Foundation        | In Progress | Core abstractions, config, auth, observability |
-| Phase 1: VM Runtime        | In Progress     | Full VM lifecycle management                   |
-| Phase 2: Storage & Network | In Progress     | Multi-backend storage, SDN                     |
-| Phase 3: Cluster & HA      | In Progress     | Multi-node, live migration, HA                 |
-| Phase 4: vCluster          | In Progress     | Lightweight Kubernetes runtime                 |
-| Phase 5: K8s Integration   | In Progress     | K8s-on-VM, unified management                  |
+Full API documentation is available at [docs/apis.md](docs/apis.md).
+
+**API Compatibility:**
+
+* REST API paths compatible with Proxmox VE (VM operations)
+* Extended paths for vCluster resources
+* gRPC for internal cluster communication
+
+**Example Endpoints:**
+
+```
+# VM Operations (Proxmox-compatible)
+GET    /api2/json/nodes/{node}/qemu
+POST   /api2/json/nodes/{node}/qemu
+GET    /api2/json/nodes/{node}/qemu/{vmid}/status/current
+POST   /api2/json/nodes/{node}/qemu/{vmid}/status/start
+POST   /api2/json/nodes/{node}/qemu/{vmid}/migrate
+
+# VirtualCluster Operations (Extended)
+GET    /api/v1/tenants/{tenantId}/vclusters
+POST   /api/v1/tenants/{tenantId}/vclusters
+GET    /api/v1/tenants/{tenantId}/vclusters/{name}
+GET    /api/v1/tenants/{tenantId}/vclusters/{name}/kubeconfig
+POST   /api/v1/tenants/{tenantId}/vclusters/{name}/upgrade
+```
 
 ---
 
+## Roadmap
 
+| Phase   | Status         | Description                                    |
+| ------- | -------------- | ---------------------------------------------- |
+| Phase 0 | ✅ Complete     | Project scaffold, core types, build system     |
+| Phase 1 | 🚧 In Progress | Storage abstraction, basic VM lifecycle        |
+| Phase 2 | 📋 Planned     | Network abstraction, QMP integration           |
+| Phase 3 | 📋 Planned     | Cluster consensus, node management             |
+| Phase 4 | 📋 Planned     | VirtualCluster implementation                  |
+| Phase 5 | 📋 Planned     | HA, migration, production hardening            |
+| Phase 6 | 📋 Planned     | Web UI, advanced SDN, AI workload optimization |
 
-## Development Setup
+---
+
+## Contributing
+
+We welcome contributions from the community! Please read our [Contributing Guide](CONTRIBUTING.md) before submitting PRs.
+
+### Development Setup
 
 ```bash
-# Clone your fork
+# Clone the repo
 git clone https://github.com/turtacn/go-proxmox.git
 cd go-proxmox
 
 # Install development dependencies
-make dev-deps
-
-# Run tests
-make test
+make deps
 
 # Run linters
 make lint
 
-# Build for development
-make build-dev
+# Run all tests
+make test
+
+# Run integration tests (requires QEMU)
+make test-integration
+
+# Build for current platform
+make build
 ```
 
----
+### Code Style
 
-## Documentation
-
-* [Architecture Guide](docs/architecture.md) - Detailed system architecture
-* [API Reference](docs/api-reference.md) - REST and gRPC API documentation
-* [Operations Guide](docs/operations.md) - Deployment and operations
-* [Development Guide](docs/development.md) - Contributing and development setup
+* Follow standard Go conventions
+* Run `make lint` before committing
+* Ensure test coverage ≥80% for new code
+* Document all exported types and functions
 
 ---
 
+## Community
+
+* **GitHub Discussions**: [github.com/turtacn/go-proxmox/discussions](https://github.com/turtacn/go-proxmox/discussions)
+* **Issue Tracker**: [github.com/turtacn/go-proxmox/issues](https://github.com/turtacn/go-proxmox/issues)
+* **Security Issues**: [security@go-proxmox.dev](mailto:security@go-proxmox.dev) (PGP key available)
+
+---
 
 ## License
 
-go-proxmox is licensed under the [Apache License 2.0](LICENSE).
+go-proxmox is licensed under the [Eclipse Public License 2.0](LICENSE).
 
 ```
-Copyright 2026 The go-proxmox Authors
+Copyright (c) 2024-2025 go-proxmox Contributors
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+This program and the accompanying materials are made available under the
+terms of the Eclipse Public License 2.0 which is available at
+http://www.eclipse.org/legal/epl-2.0
 ```
 
 ---
 
-## Acknowledgements
+## Acknowledgments
 
-go-proxmox stands on the shoulders of giants:
-
-* [Proxmox VE](https://www.proxmox.com/) - Inspiration and compatibility target
-* [QEMU/KVM](https://www.qemu.org/) - Virtualization runtime
-* [containerd](https://containerd.io/) - Container runtime
-* [k3s](https://k3s.io/) - Lightweight Kubernetes
-* [etcd](https://etcd.io/) - Distributed state store
-
----
-
-## References
-
-* [https://github.com/turtacn/open-vcluster-api](https://github.com/turtacn/open-vcluster-api)
+* [Proxmox VE](https://www.proxmox.com/) for the foundational virtualization concepts
+* [vCluster](https://www.vcluster.com/) for virtual Kubernetes cluster technology
+* [K3s](https://k3s.io/) for lightweight Kubernetes distribution
+* [QEMU](https://www.qemu.org/) for virtualization backend
 
 ---
 
 <div align="center">
-  <b>Built with passion for the cloud-native infrastructure community</b>
-  <br><br>
-  <a href="https://github.com/turtacn/go-proxmox/stargazers">Star us on GitHub</a>
+  <sub>Built with ❤️ by the go-proxmox community</sub>
 </div>
-
----
