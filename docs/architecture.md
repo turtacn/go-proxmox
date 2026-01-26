@@ -341,46 +341,47 @@ QMP（QEMU Machine Protocol）客户端是 VM 控制的核心组件，负责与 
 ```mermaid
 classDiagram
     class QMPClient {
-        -socketPath string
-        -conn net.Conn
-        -mutex sync.RWMutex
-        -eventChan chan QMPEvent
-        +Connect() error
-        +Execute(cmd Command) Response
-        +ExecuteAsync(cmd Command) chan Response
-        +SubscribeEvents(types []string) chan QMPEvent
-        +Close() error
+        -socketPath : string
+        -conn : net.Conn
+        -mutex : sync.RWMutex
+        -eventChan : chan QMPEvent
+        +Connect() : error
+        +Execute(cmd : Command) : Response
+        +ExecuteAsync(cmd : Command) : chan Response
+        +SubscribeEvents(types : []string) : chan QMPEvent
+        +Close() : error
     }
-    
+
     class QMPPool {
-        -clients map[int]*QMPClient
-        -mutex sync.RWMutex
-        -maxConns int
-        +Get(vmid int) *QMPClient
-        +Release(vmid int)
-        +CloseAll()
+        -clients : map[int]*QMPClient
+        -mutex : sync.RWMutex
+        -maxConns : int
+        +Get(vmid : int) : *QMPClient
+        +Release(vmid : int) : void
+        +CloseAll() : void
     }
-    
+
     class Command {
-        +Execute string
-        +Arguments map[string]interface{}
+        +Execute : string
+        +Arguments : map[string]interface（）
     }
-    
+
     class Response {
-        +Return interface{}
-        +Error *QMPError
+        +Return : interface（）
+        +Error : *QMPError
     }
-    
+
     class QMPEvent {
-        +Event string
-        +Data map[string]interface{}
-        +Timestamp Timestamp
+        +Event : string
+        +Data : map[string]interface（）
+        +Timestamp : Timestamp
     }
-    
+
     QMPPool --> QMPClient
     QMPClient --> Command
     QMPClient --> Response
     QMPClient --> QMPEvent
+
 ```
 
 #### 5.1.3 核心流程
