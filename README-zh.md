@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="logo.png" alt="go-proxmox Logo" width="200" height="200">
+  <!--<img src="logo.png" alt="go-proxmox Logo" width="200" height="200">-->
   
   # go-proxmox
   
