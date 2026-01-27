@@ -12,49 +12,6 @@
 * **节点管理**：支持节点扩缩容和替换
 * **架构原则**：极简、可维护、性价比优先
 
-### 1.2 分布式事务方案对比分析
-
-```mermaid
-graph LR
-    subgraph 方案对比
-        A[2PC/XA] --> A1[强一致性]
-        A --> A2[阻塞问题]
-        A --> A3[性能开销大]
-        
-        B[TCC] --> B1[高性能]
-        B --> B2[代码侵入强]
-        B --> B3[开发复杂度高]
-        
-        C[SAGA] --> C1[最终一致性]
-        C --> C2[补偿机制]
-        C --> C3[开发友好]
-        
-        D[DTM Workflow] --> D1[灵活混合]
-        D --> D2[可视化编排]
-        D --> D3[故障恢复能力强]
-    end
-    
-    style C fill:#90EE90
-    style D fill:#FFD700
-```
-
-#### 方案对比表
-
-| 维度    | 2PC/XA            | TCC                      | SAGA  | DTM Workflow |
-| ----- | ----------------- | ------------------------ | ----- | ------------ |
-| 一致性保证 | 强一致               | 最终一致                     | 最终一致  | 最终一致         |
-| 性能开销  | 高（锁资源）            | 中                        | 低     | 低            |
-| 开发复杂度 | 中                 | 高（需实现Try/Confirm/Cancel） | 中     | 低（声明式编排）     |
-| 故障恢复  | 阻塞风险              | 复杂补偿逻辑                   | 补偿流程  | 自动重试+补偿      |
-| 适用场景  | 金融核心交易            | 高并发扣款                    | 长流程编排 | 复杂VM生命周期     |
-| 资源占用  | 30-50% CPU额外开销[1] | 15-25%                   | 5-10% | 8-12%        |
-
-**现状**：选择 DTM Workflow ，原因如下：
-
-1. **性价比优势**：根据 DTM 官方性能测试[2]，SAGA 模式下 TPS 可达 2000+，而资源开销仅为 2PC 的 1/4
-2. **可维护性**：声明式编排降低心智负担，故障可追溯
-3. **灵活性**：VM 生命周期存在多种异构操作（QMP调用、存储操作、网络配置），Workflow 可混合编排
-4. **快速失败**：每步操作可设置超时和重试策略，符合"失败尽早暴露"原则
 
 ---
 
@@ -117,7 +74,7 @@ stateDiagram-v2
 
 ```mermaid
 graph TB
-    subgraph 创建工作流（Create VM Workflow）
+    subgraph CVW[创建工作流（Create VM Workflow）]
         A[步骤1：校验并预留配额<br/>Validate and Reserve Quota] --> B[步骤2：选择目标节点<br/>Select Target PM]
         B --> C[步骤3：创建虚拟磁盘<br/>Create Virtual Disk]
         C --> D[步骤4：生成VM配置<br/>Generate VM Config]
@@ -661,7 +618,7 @@ func CompensateHotMigrateVM(ctx context.Context, req *MigrateRequest) error {
 
 ```mermaid
 graph TB
-    subgraph 冷迁移工作流（Cold Migration Workflow）
+    subgraph CMW[冷迁移工作流（Cold Migration Workflow）]
         A[步骤1：关闭VM<br/>Shutdown VM] --> B[步骤2：打包磁盘<br/>Package Disk]
         B --> C[步骤3：传输到目标节点<br/>Transfer to Target]
         C --> D[步骤4：解压磁盘<br/>Unpack Disk]
@@ -699,7 +656,7 @@ graph TB
 
 ```mermaid
 graph LR
-    subgraph 销毁工作流（Destroy VM Workflow）
+    subgraph DVW[销毁工作流（Destroy VM Workflow）]
         A[步骤1：标记删除状态<br/>Mark as Deleting] --> B[步骤2：通过QMP关闭VM<br/>Shutdown via QMP]
         B --> C[步骤3：删除虚拟磁盘<br/>Delete Virtual Disk]
         C --> D[步骤4：清理网络配置<br/>Cleanup Network]
@@ -733,26 +690,26 @@ graph LR
 
 ```mermaid
 graph TB
-    subgraph 用户层（User Layer）
+    subgraph UL[用户层（User Layer）]
         API[RESTful API Gateway]
     end
     
-    subgraph 控制平面（Control Plane）
+    subgraph CP[控制平面（Control Plane）]
         CTL[VM Controller]
         QUOTA[Quota Manager]
         SCHED[Scheduler]
         DTM[DTM Server<br/>分布式事务协调器]
     end
     
-    subgraph 数据平面（Data Plane）
+    subgraph DP[数据平面（Data Plane）]
         PM1[物理节点1<br/>PM Agent]
         PM2[物理节点2<br/>PM Agent]
         PM3[物理节点N<br/>PM Agent]
     end
     
-    subgraph 存储层（Storage Layer）
-        ETCD[etcd<br/>元数据存储]
-        SHARED[共享存储<br/>Ceph/NFS]
+    subgraph SL[存储层（Storage Layer）]
+        MYSQL[mysql;<br/>元数据存储]
+        SHARED[共享存储<br/>VS]
     end
     
     API --> CTL
@@ -765,8 +722,8 @@ graph TB
     CTL --> PM2
     CTL --> PM3
     
-    CTL --> ETCD
-    QUOTA --> ETCD
+    CTL --> MYSQL
+    QUOTA --> MYSQL
     
     PM1 --> SHARED
     PM2 --> SHARED
@@ -777,7 +734,7 @@ graph TB
     PM3 -.QMP协议.-> QEMU3[QEMU/KVM]
     
     style DTM fill:#FFD700
-    style ETCD fill:#87CEEB
+    style MYSQL fill:#87CEEB
     style SHARED fill:#87CEEB
 ```
 
@@ -790,59 +747,12 @@ graph TB
 | **Quota Manager** | 配额分配、预留、回收            | 内嵌在 Controller | -                 |
 | **Scheduler**     | 节点选择算法                | 内嵌在 Controller | -                 |
 | **PM Agent**      | 执行节点本地操作（磁盘、网络、QMP调用） | Go + systemd   | 30MB 内存/节点        |
-| **etcd**          | 存储 VM 元数据、配额信息        | etcd v3.5      | 200MB 内存（3节点集群）   |
+| **MYSQL**          | 存储 VM 元数据、配额信息        | MYSQL     | 200MB 内存（3节点集群）   |
 
 **性价比分析**：
 
 * 控制平面总资源 < 500MB 内存，适合百节点规模
-* 对比 Proxmox（需 2GB+ 内存）和 OpenStack（需 8GB+ 内存），资源占用降低 **75%-90%**
 
----
-
-### 4.3 部署架构图
-
-```mermaid
-graph TB
-    subgraph 高可用部署（HA Deployment）
-        subgraph 控制节点1（Control Node 1）
-            CTL1[VM Controller<br/>Leader]
-            DTM1[DTM Server<br/>Replica]
-            ETCD1[etcd<br/>Member]
-        end
-        
-        subgraph 控制节点2（Control Node 2）
-            CTL2[VM Controller<br/>Standby]
-            DTM2[DTM Server<br/>Replica]
-            ETCD2[etcd<br/>Member]
-        end
-        
-        subgraph 控制节点3（Control Node 3）
-            CTL3[VM Controller<br/>Standby]
-            DTM3[DTM Server<br/>Replica]
-            ETCD3[etcd<br/>Member]
-        end
-    end
-    
-    subgraph 计算节点（Compute Nodes）
-        PM1[PM Agent 1]
-        PM2[PM Agent 2]
-        PM_N[PM Agent N]
-    end
-    
-    LB[负载均衡器<br/>HAProxy/Nginx] --> CTL1
-    LB --> CTL2
-    LB --> CTL3
-    
-    CTL1 --> PM1
-    CTL1 --> PM2
-    CTL1 --> PM_N
-    
-    ETCD1 -.Raft协议.-> ETCD2
-    ETCD2 -.Raft协议.-> ETCD3
-    
-    style CTL1 fill:#90EE90
-    style LB fill:#FFD700
-```
 
 ---
 
@@ -1073,10 +983,10 @@ sequenceDiagram
 
 ## 八、参考资料
 
-[1] 分布式事务性能对比研究，清华大学分布式系统实验室，2023
-[2] DTM 官方性能测试报告：[https://dtm.pub/performance/benchmark.html](https://dtm.pub/performance/benchmark.html)
-[3] QEMU QMP 协议规范：[https://qemu.readthedocs.io/en/latest/interop/qmp-spec.html](https://qemu.readthedocs.io/en/latest/interop/qmp-spec.html)
-[4] QEMU Live Migration 实现原理：[https://wiki.qemu.org/Features/LiveMigration](https://wiki.qemu.org/Features/LiveMigration)
-[5] Proxmox 架构分析：[https://pve.proxmox.com/wiki/Developer_Documentation](https://pve.proxmox.com/wiki/Developer_Documentation)
-[6] etcd Raft 一致性协议：[https://etcd.io/docs/v3.5/learning/design-raft/](https://etcd.io/docs/v3.5/learning/design-raft/)
-[7] Ceph RBD 性能优化最佳实践：[https://docs.ceph.com/en/latest/rbd/rbd-config-ref/](https://docs.ceph.com/en/latest/rbd/rbd-config-ref/)
+* [1] 分布式事务性能对比研究，清华大学分布式系统实验室，2023
+* [2] DTM 官方性能测试报告：[https://dtm.pub/performance/benchmark.html](https://dtm.pub/performance/benchmark.html)
+* [3] QEMU QMP 协议规范：[https://qemu.readthedocs.io/en/latest/interop/qmp-spec.html](https://qemu.readthedocs.io/en/latest/interop/qmp-spec.html)
+* [4] QEMU Live Migration 实现原理：[https://wiki.qemu.org/Features/LiveMigration](https://wiki.qemu.org/Features/LiveMigration)
+* [5] Proxmox 架构分析：[https://pve.proxmox.com/wiki/Developer_Documentation](https://pve.proxmox.com/wiki/Developer_Documentation)
+* [6] etcd Raft 一致性协议：[https://etcd.io/docs/v3.5/learning/design-raft/](https://etcd.io/docs/v3.5/learning/design-raft/)
+* [7] Ceph RBD 性能优化最佳实践：[https://docs.ceph.com/en/latest/rbd/rbd-config-ref/](https://docs.ceph.com/en/latest/rbd/rbd-config-ref/)
