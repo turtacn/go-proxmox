@@ -1,992 +1,1717 @@
-# 基于 SAGA Workflow 的虚拟机生命周期管理设计方案
+# 基于 SAGA Workflow 的虚拟机生命周期管理系统分析
 
 ## 一、需求分析与方案评估
 
-### 1.1 核心需求识别
+### 1.1 核心需求洞察
 
-本方案需要构建一个**极简化的虚拟机管理系统**，核心特征包括：
+本系统需要构建一个轻量级、高性能的虚拟机管理平台,核心特征包括:
 
-* **技术栈约束**：直接基于 QMP/QEMU/KVM
-* **资源管理**：支持静态分配和弹性超卖的 Resource Quota 控制
-* **迁移能力**：支持共享存储热迁移和本地盘冷迁移
-* **节点管理**：支持节点扩缩容和替换
-* **架构原则**：极简、可维护、性价比优先
+1. **技术栈约束**:直接基于 QMP/QEMU/KVM
+2. **资源管理**:支持静态分配和弹性超卖的配额控制,需要精确的资源隔离
+3. **迁移能力**:共享存储支持热迁移,本地盘仅支持冷迁移
+4. **扩展性**:支持节点的动态扩缩容和替换
+5. **一致性保障**:在分布式环境下保证虚拟机生命周期操作的最终一致性
 
+## 二、SAGA Workflow 分布式事务方案
 
----
+### 2.1 SAGA 模式基础原理
 
-## 二、虚拟机生命周期 MVP 设计
-
-### 2.1 生命周期状态机
-
-```mermaid
-stateDiagram-v2
-    [*] --> 待创建: 提交创建请求
-    待创建 --> 创建中: 开始创建工作流
-    创建中 --> 运行中: 创建成功
-    创建中 --> 创建失败: 失败回滚
-    创建失败 --> [*]: 资源清理完成
-    
-    运行中 --> 关机中: 关机请求
-    关机中 --> 已关机: 关机完成
-    已关机 --> 启动中: 启动请求
-    启动中 --> 运行中: 启动成功
-    
-    运行中 --> 迁移中: 热迁移（共享存储）
-    已关机 --> 迁移中: 冷迁移（本地盘）
-    迁移中 --> 运行中: 迁移成功
-    迁移中 --> 迁移失败: 回滚到源节点
-    
-    运行中 --> 升级中: 配置升级
-    升级中 --> 运行中: 升级成功
-    
-    运行中 --> 销毁中: 销毁请求
-    已关机 --> 销毁中: 销毁请求
-    销毁中 --> [*]: 销毁完成
-```
-
-### 2.2 MVP 核心操作分类
-
-#### 2.2.1 必须使用 SAGA Workflow 的复杂操作
-
-| 操作            | 复杂度原因                    | DFR 风险      |
-| ------------- | ------------------------ | ----------- |
-| **创建 VM**     | 涉及资源分配、磁盘创建、网络配置、QMP 初始化 | 部分成功导致资源泄漏  |
-| **跨节点迁移**     | 源节点暂停、网络迁移、目标节点启动、清理源端   | 网络中断、目标节点故障 |
-| **销毁 VM**     | QMP 关闭、磁盘释放、配额回收、元数据删除   | 存储清理失败      |
-| **配置升级（需重启）** | 快照当前配置、修改资源、热更新/重启       | 配置不兼容导致启动失败 |
-
-#### 2.2.2 可选直调的简单操作
-
-| 操作               | 原因             | 失败处理        |
-| ---------------- | -------------- | ----------- |
-| **启动/关机**        | 单一 QMP 命令，幂等性强 | 同步返回结果，失败重试 |
-| **查询状态**         | 只读操作，无状态变更     | 无需补偿        |
-| **挂载/卸载磁盘（已关机）** | 修改配置文件，幂等      | 失败直接返回错误    |
-
----
-
-## 三、核心 SAGA Workflow 详细设计
-
-### 3.1 VM 创建工作流
-
-#### 3.1.1 整体流程图
-
-```mermaid
-graph TB
-    subgraph CVW[创建工作流（Create VM Workflow）]
-        A[步骤1：校验并预留配额<br/>Validate and Reserve Quota] --> B[步骤2：选择目标节点<br/>Select Target PM]
-        B --> C[步骤3：创建虚拟磁盘<br/>Create Virtual Disk]
-        C --> D[步骤4：生成VM配置<br/>Generate VM Config]
-        D --> E[步骤5：通过QMP启动VM<br/>Start VM via QMP]
-        E --> F[步骤6：配置虚拟网络<br/>Setup Virtual Network]
-        F --> G[步骤7：持久化元数据<br/>Persist Metadata]
-        G --> H[完成<br/>Complete]
-    end
-    
-    A -->|失败| A_C[补偿：无操作<br/>Compensate: NOP]
-    B -->|失败| B_C[补偿：释放预留配额<br/>Compensate: Release Quota]
-    C -->|失败| C_C[补偿：删除已创建磁盘<br/>Compensate: Delete Disk]
-    D -->|失败| D_C[补偿：删除配置+磁盘<br/>Compensate: Delete Config+Disk]
-    E -->|失败| E_C[补偿：停止VM+清理资源<br/>Compensate: Stop VM+Cleanup]
-    F -->|失败| F_C[补偿：销毁VM+清理网络<br/>Compensate: Destroy VM+Network]
-    G -->|失败| G_C[补偿：完整销毁流程<br/>Compensate: Full Destroy]
-    
-    style H fill:#90EE90
-    style A_C fill:#FFB6C1
-    style B_C fill:#FFB6C1
-    style C_C fill:#FFB6C1
-    style D_C fill:#FFB6C1
-    style E_C fill:#FFB6C1
-    style F_C fill:#FFB6C1
-    style G_C fill:#FFB6C1
-```
-
-#### 3.1.2 详细实现与 DFR 处理
-
-**步骤 1：校验并预留配额**
-
-```go
-// 正向操作
-func ReserveQuota(ctx context.Context, req *CreateVMRequest) error {
-    // 幂等性：使用请求 ID 作为预留标识
-    reservationID := fmt.Sprintf("reserve-%s", req.VMID)
-    
-    // 检查是否已预留（重试场景）
-    if existing := quotaStore.GetReservation(reservationID); existing != nil {
-        return nil // 已预留，幂等返回成功
-    }
-    
-    // 检查用户配额
-    userQuota := quotaStore.GetUserQuota(req.UserID)
-    if userQuota.CPU < req.CPU || userQuota.Memory < req.Memory {
-        return ErrInsufficientQuota // 快速失败
-    }
-    
-    // 原子性预留（使用分布式锁或数据库事务）
-    return quotaStore.AtomicReserve(reservationID, QuotaReservation{
-        UserID:    req.UserID,
-        CPU:       req.CPU,
-        Memory:    req.Memory,
-        Disk:      req.DiskSize,
-        ExpiresAt: time.Now().Add(10 * time.Minute), // 超时自动释放
-    })
-}
-
-// 补偿操作（后续步骤失败时调用）
-func CompensateReserveQuota(ctx context.Context, req *CreateVMRequest) error {
-    // 补偿操作必须幂等
-    reservationID := fmt.Sprintf("reserve-%s", req.VMID)
-    
-    // 删除预留记录（幂等：即使已删除也返回成功）
-    return quotaStore.ReleaseReservation(reservationID)
-}
-```
-
-**DFR 场景处理**：
-
-* **重试策略**：网络抖动导致失败 → 最多重试 3 次，间隔 1s/2s/5s（指数退避）
-* **超时保护**：单次调用超时 5s，避免长时间阻塞
-* **失败暴露**：配额不足直接返回 `ErrInsufficientQuota`，不进入工作流
-
----
-
-**步骤 2：选择目标节点**
-
-```go
-// 正向操作
-func SelectTargetPM(ctx context.Context, req *CreateVMRequest) (string, error) {
-    // 幂等性：如果已选择节点，直接返回
-    if req.PreSelectedPMID != "" {
-        return req.PreSelectedPMID, nil
-    }
-    
-    // 查询所有可用节点
-    availablePMs := pmStore.ListHealthyPMs()
-    
-    // 评分排序（CPU权重40%、内存权重40%、磁盘IO权重20%）
-    scored := make([]PMScore, 0, len(availablePMs))
-    for _, pm := range availablePMs {
-        score := calculateScore(pm, req)
-        scored = append(scored, PMScore{PMID: pm.ID, Score: score})
-    }
-    sort.Slice(scored, func(i, j int) bool {
-        return scored[i].Score > scored[j].Score
-    })
-    
-    // 选择最优节点
-    if len(scored) == 0 {
-        return "", ErrNoAvailablePM // 快速失败
-    }
-    
-    // 乐观锁：尝试在选定节点上预留资源
-    selectedPM := scored[0].PMID
-    if err := pmStore.TryLockResources(selectedPM, req.CPU, req.Memory); err != nil {
-        // 降级：尝试次优节点
-        if len(scored) > 1 {
-            selectedPM = scored[1].PMID
-            if err := pmStore.TryLockResources(selectedPM, req.CPU, req.Memory); err != nil {
-                return "", ErrResourceContention
-            }
-        } else {
-            return "", err
-        }
-    }
-    
-    return selectedPM, nil
-}
-
-// 补偿操作
-func CompensateSelectTargetPM(ctx context.Context, pmID string, req *CreateVMRequest) error {
-    // 释放节点资源锁（幂等）
-    return pmStore.ReleaseResourceLock(pmID, req.CPU, req.Memory)
-}
-```
-
-**DFR 场景处理**：
-
-* **资源竞争**：多个 VM 同时创建 → 使用乐观锁 + 降级到次优节点
-* **节点故障**：选定节点宕机 → 健康检查过滤 + 心跳超时 10s 自动剔除
-* **数据一致性**：节点资源使用量通过定时上报（每 30s）+ 事件触发更新保证准实时性
-
----
-
-**步骤 3：创建虚拟磁盘**
-
-```go
-// 正向操作
-func CreateVirtualDisk(ctx context.Context, pmID string, req *CreateVMRequest) (string, error) {
-    // 幂等性检查：磁盘是否已存在
-    diskPath := fmt.Sprintf("/var/lib/vms/%s/disk.qcow2", req.VMID)
-    if fileExists(diskPath) {
-        // 验证大小是否匹配
-        if getDiskSize(diskPath) == req.DiskSize {
-            return diskPath, nil // 幂等成功
-        }
-        // 大小不匹配，可能是脏数据
-        return "", ErrDiskSizeMismatch
-    }
-    
-    // 调用目标节点 Agent API 创建磁盘
-    agentClient := getAgentClient(pmID)
-    result, err := agentClient.CreateQCOW2(ctx, &CreateDiskRequest{
-        Path:   diskPath,
-        Size:   req.DiskSize,
-        Format: "qcow2",
-    })
-    if err != nil {
-        return "", fmt.Errorf("create disk failed: %w", err)
-    }
-    
-    return result.Path, nil
-}
-
-// 补偿操作
-func CompensateCreateVirtualDisk(ctx context.Context, pmID, diskPath string) error {
-    agentClient := getAgentClient(pmID)
-    
-    // 删除磁盘（幂等：文件不存在也返回成功）
-    return agentClient.DeleteDisk(ctx, diskPath)
-}
-```
-
-**DFR 场景处理**：
-
-* **磁盘创建超时**：设置 60s 超时（根据磁盘大小动态调整：`timeout = 30s + diskSizeGB * 2s`）
-* **存储空间不足**：Agent 预检查可用空间，不足直接返回 `ErrInsufficientStorage`
-* **脏数据残留**：重试前检查磁盘文件，大小不匹配则先删除再创建
-* **网络分区**：Agent 侧使用操作日志，Controller 可查询操作状态避免重复创建
-
----
-
-**步骤 4：生成 VM 配置**
-
-```go
-// 正向操作
-func GenerateVMConfig(ctx context.Context, pmID string, req *CreateVMRequest, diskPath string) error {
-    configPath := fmt.Sprintf("/etc/vms/%s.json", req.VMID)
-    
-    // 幂等性检查
-    if configExists(pmID, configPath) {
-        return nil
-    }
-    
-    // 构建 QEMU 配置
-    config := QEMUConfig{
-        Name:   req.VMName,
-        VMID:   req.VMID,
-        CPU:    req.CPU,
-        Memory: req.Memory,
-        Disks: []DiskConfig{{
-            Driver: "virtio-blk",
-            File:   diskPath,
-            Format: "qcow2",
-        }},
-        Networks: []NetworkConfig{{
-            Model:  "virtio-net-pci",
-            Bridge: "br0", // 从节点网络拓扑获取
-        }},
-        QMP: QMPConfig{
-            SocketPath: fmt.Sprintf("/var/run/qemu/%s.sock", req.VMID),
-        },
-    }
-    
-    // 写入配置文件
-    agentClient := getAgentClient(pmID)
-    return agentClient.WriteConfig(ctx, configPath, config)
-}
-
-// 补偿操作
-func CompensateGenerateVMConfig(ctx context.Context, pmID, vmID string) error {
-    configPath := fmt.Sprintf("/etc/vms/%s.json", vmID)
-    agentClient := getAgentClient(pmID)
-    
-    // 删除配置文件（幂等）
-    return agentClient.DeleteConfig(ctx, configPath)
-}
-```
-
----
-
-**步骤 5：通过 QMP 启动 VM**
-
-```go
-// 正向操作
-func StartVMViaQMP(ctx context.Context, pmID, vmID string) error {
-    agentClient := getAgentClient(pmID)
-    
-    // 1. 启动 QEMU 进程
-    qemuCmd := buildQEMUCommand(vmID) // 从配置生成启动参数
-    if err := agentClient.StartProcess(ctx, qemuCmd); err != nil {
-        return fmt.Errorf("start qemu failed: %w", err)
-    }
-    
-    // 2. 等待 QMP 就绪（最多 30s）
-    qmpPath := fmt.Sprintf("/var/run/qemu/%s.sock", vmID)
-    if err := waitForQMPReady(ctx, pmID, qmpPath, 30*time.Second); err != nil {
-        return err
-    }
-    
-    // 3. 执行 QMP 命令启动 VM
-    qmpClient := NewQMPClient(pmID, qmpPath)
-    return qmpClient.Execute(ctx, "cont") // 从 paused 状态恢复
-}
-
-// 补偿操作
-func CompensateStartVMViaQMP(ctx context.Context, pmID, vmID string) error {
-    agentClient := getAgentClient(pmID)
-    qmpPath := fmt.Sprintf("/var/run/qemu/%s.sock", vmID)
-    
-    // 1. 通过 QMP 优雅关闭
-    qmpClient := NewQMPClient(pmID, qmpPath)
-    if err := qmpClient.Execute(ctx, "system_powerdown"); err == nil {
-        // 等待最多 10s
-        time.Sleep(10 * time.Second)
-    }
-    
-    // 2. 强制杀死进程
-    return agentClient.KillProcess(ctx, vmID)
-}
-```
-
-**DFR 场景处理**：
-
-* **QEMU 启动失败**：解析错误日志（如配置语法错误、设备不支持），记录到 VM 事件日志
-* **QMP 连接超时**：区分场景：
-
-  * Socket 文件不存在 → QEMU 未启动成功，直接失败
-  * Socket 存在但无响应 → QEMU 卡住，执行补偿清理
-* **启动后立即崩溃**：监听进程退出事件（通过 Agent 上报），触发补偿流程
-
----
-
-**步骤 6：配置虚拟网络**
-
-```go
-// 正向操作
-func SetupVirtualNetwork(ctx context.Context, pmID, vmID string) error {
-    agentClient := getAgentClient(pmID)
-    
-    // 1. 创建 TAP 设备
-    tapName := fmt.Sprintf("tap-%s", vmID[:8])
-    if err := agentClient.CreateTAPDevice(ctx, tapName); err != nil {
-        return err
-    }
-    
-    // 2. 绑定到网桥
-    if err := agentClient.AttachToBridge(ctx, tapName, "br0"); err != nil {
-        return err
-    }
-    
-    // 3. 通过 QMP 热插拔网卡
-    qmpClient := NewQMPClient(pmID, fmt.Sprintf("/var/run/qemu/%s.sock", vmID))
-    return qmpClient.Execute(ctx, "netdev_add", map[string]interface{}{
-        "type":   "tap",
-        "id":     "net0",
-        "ifname": tapName,
-    })
-}
-
-// 补偿操作
-func CompensateSetupVirtualNetwork(ctx context.Context, pmID, vmID string) error {
-    agentClient := getAgentClient(pmID)
-    tapName := fmt.Sprintf("tap-%s", vmID[:8])
-    
-    // 从网桥解绑（幂等）
-    agentClient.DetachFromBridge(ctx, tapName, "br0")
-    
-    // 删除 TAP 设备（幂等）
-    return agentClient.DeleteTAPDevice(ctx, tapName)
-}
-```
-
----
-
-**步骤 7：持久化元数据**
-
-```go
-// 正向操作
-func PersistMetadata(ctx context.Context, req *CreateVMRequest, pmID, diskPath string) error {
-    vm := &VMMetadata{
-        VMID:       req.VMID,
-        Name:       req.VMName,
-        UserID:     req.UserID,
-        PMID:       pmID,
-        CPU:        req.CPU,
-        Memory:     req.Memory,
-        DiskPath:   diskPath,
-        State:      StateRunning,
-        CreatedAt:  time.Now(),
-    }
-    
-    // 使用数据库事务保证原子性
-    return db.Transaction(func(tx *Tx) error {
-        // 插入 VM 记录（主键冲突自动更新）
-        if err := tx.UpsertVM(vm); err != nil {
-            return err
-        }
-        
-        // 提交配额变更
-        return tx.CommitQuotaUsage(req.UserID, req.CPU, req.Memory, req.DiskSize)
-    })
-}
-
-// 补偿操作
-func CompensatePersistMetadata(ctx context.Context, vmID string) error {
-    // 删除 VM 元数据（幂等）
-    return db.DeleteVM(vmID)
-}
-```
-
-#### 3.1.3 DTM Workflow 编排代码
-
-```go
-// 定义 SAGA 工作流
-func RegisterCreateVMWorkflow(dtmServer string) {
-    saga := dtmcli.NewSaga(dtmServer, genGid())
-    
-    saga.Add(
-        // 步骤 1
-        "http://vm-controller/api/saga/reserve-quota",
-        "http://vm-controller/api/saga/compensate-reserve-quota",
-        &CreateVMRequest{},
-    ).Add(
-        // 步骤 2
-        "http://vm-controller/api/saga/select-pm",
-        "http://vm-controller/api/saga/compensate-select-pm",
-        nil,
-    ).Add(
-        // 步骤 3
-        "http://vm-controller/api/saga/create-disk",
-        "http://vm-controller/api/saga/compensate-create-disk",
-        nil,
-    ).Add(
-        // 步骤 4
-        "http://vm-controller/api/saga/generate-config",
-        "http://vm-controller/api/saga/compensate-generate-config",
-        nil,
-    ).Add(
-        // 步骤 5
-        "http://vm-controller/api/saga/start-vm",
-        "http://vm-controller/api/saga/compensate-start-vm",
-        nil,
-    ).Add(
-        // 步骤 6
-        "http://vm-controller/api/saga/setup-network",
-        "http://vm-controller/api/saga/compensate-setup-network",
-        nil,
-    ).Add(
-        // 步骤 7（最后一步无需补偿）
-        "http://vm-controller/api/saga/persist-metadata",
-        "",
-        nil,
-    )
-    
-    // 配置重试策略
-    saga.SetRetryInterval(1, 2, 5) // 1s/2s/5s 指数退避
-    saga.SetBranchHeaders(map[string]string{
-        "Content-Type": "application/json",
-    })
-    
-    // 提交工作流
-    if err := saga.Submit(); err != nil {
-        return fmt.Errorf("submit workflow failed: %w", err)
-    }
-}
-
-// HTTP 处理器示例（步骤 1 正向操作）
-func HandleReserveQuota(c *gin.Context) {
-    var req CreateVMRequest
-    if err := c.ShouldBindJSON(&req); err != nil {
-        c.JSON(409, gin.H{"dtm_result": "FAILURE"}) // DTM 识别的失败标识
-        return
-    }
-    
-    if err := ReserveQuota(c.Request.Context(), &req); err != nil {
-        log.Errorf("reserve quota failed: %v", err)
-        c.JSON(409, gin.H{"dtm_result": "FAILURE"})
-        return
-    }
-    
-    c.JSON(200, gin.H{"dtm_result": "SUCCESS"})
-}
-```
-
----
-
-### 3.2 VM 跨节点迁移工作流
-
-#### 3.2.1 热迁移流程（共享存储）
+SAGA 是一种长事务(Long-Running Transaction)处理模式,将一个分布式事务拆分为多个本地事务,通过补偿机制保证最终一致性。
 
 ```mermaid
 sequenceDiagram
-    participant C as Controller
-    participant S as 源节点<br/>Source PM
-    participant T as 目标节点<br/>Target PM
-    participant Store as 共享存储<br/>Shared Storage
+    participant C as 协调器<br/>（DTM Server）
+    participant S1 as 服务1<br/>（VM Manager）
+    participant S2 as 服务2<br/>（Storage）
+    participant S3 as 服务3<br/>（Network）
     
-    C->>S: 步骤1：校验VM状态<br/>Validate VM State
-    S-->>C: 运行中/Running
+    C->>S1: 1. 执行正向操作T1
+    S1-->>C: 成功
+    C->>S2: 2. 执行正向操作T2
+    S2-->>C: 成功
+    C->>S3: 3. 执行正向操作T3
+    S3-->>C: 失败
     
-    C->>T: 步骤2：预检查目标节点<br/>Pre-check Target PM
-    T-->>C: 资源充足/Resources OK
+    Note over C: 检测到失败<br/>触发补偿流程
     
-    C->>S: 步骤3：QMP执行migrate命令<br/>Execute QMP migrate
-    S->>Store: 内存增量同步<br/>Incremental Memory Sync
-    S->>T: 热迁移数据流<br/>Live Migration Stream
+    C->>S2: 4. 执行补偿操作C2
+    S2-->>C: 补偿成功
+    C->>S1: 5. 执行补偿操作C1
+    S1-->>C: 补偿成功
     
-    Note over S,T: 迭代同步脏页<br/>Iterative Dirty Page Sync
-    
-    S->>T: 步骤4：暂停源VM<br/>Pause Source VM
-    S->>T: 最终内存快照<br/>Final Memory Snapshot
-    T->>T: 步骤5：恢复VM运行<br/>Resume VM on Target
-    
-    T-->>C: 迁移完成<br/>Migration Complete
-    
-    C->>S: 步骤6：清理源端资源<br/>Cleanup Source Resources
-    C->>C: 步骤7：更新元数据<br/>Update Metadata
+    Note over C: SAGA事务回滚完成
 ```
 
-**实现代码**：
+**核心机制**:
 
-```go
-// 正向操作
-func HotMigrateVM(ctx context.Context, req *MigrateRequest) error {
-    // 步骤 1：校验状态
-    vm := vmStore.GetVM(req.VMID)
-    if vm.State != StateRunning {
-        return ErrInvalidState
-    }
-    
-    // 步骤 2：目标节点预检查
-    targetAgent := getAgentClient(req.TargetPMID)
-    if err := targetAgent.CheckResources(ctx, vm.CPU, vm.Memory); err != nil {
-        return ErrTargetPMNoCapacity
-    }
-    
-    // 步骤 3：执行 QMP 迁移
-    sourceQMP := NewQMPClient(vm.PMID, vm.QMPSocketPath)
-    migrateURI := fmt.Sprintf("tcp:%s:49152", getNodeIP(req.TargetPMID))
-    
-    // 目标节点启动监听
-    if err := targetAgent.StartMigrationListener(ctx, 49152); err != nil {
-        return err
-    }
-    
-    // 源节点开始迁移
-    if err := sourceQMP.Execute(ctx, "migrate", map[string]interface{}{
-        "uri": migrateURI,
-    }); err != nil {
-        return err
-    }
-    
-    // 步骤 4-5：等待迁移完成（轮询 QMP 状态）
-    if err := waitForMigrationComplete(ctx, sourceQMP, 300*time.Second); err != nil {
-        return err
-    }
-    
-    // 步骤 6：清理源端
-    defer func() {
-        sourceAgent := getAgentClient(vm.PMID)
-        sourceAgent.CleanupMigrationSource(ctx, req.VMID)
-    }()
-    
-    // 步骤 7：更新元数据
-    return vmStore.UpdatePMID(req.VMID, req.TargetPMID)
-}
+1. **正向步骤(Forward Steps)**:按业务顺序执行的本地事务
+2. **补偿步骤(Compensation Steps)**:反向回滚已完成操作的事务
+3. **重试机制**:对临时性失败进行指数退避重试
+4. **幂等保障**:通过全局事务ID和本地事务版本号防止重复执行
 
-// 补偿操作（迁移失败回滚）
-func CompensateHotMigrateVM(ctx context.Context, req *MigrateRequest) error {
-    // 取消迁移
-    sourceQMP := NewQMPClient(req.SourcePMID, getQMPPath(req.VMID))
-    sourceQMP.Execute(ctx, "migrate_cancel", nil)
-    
-    // 目标节点清理
-    targetAgent := getAgentClient(req.TargetPMID)
-    return targetAgent.CleanupMigrationTarget(ctx, req.VMID)
-}
-```
+### 2.2 SAGA 在虚拟机生命周期中的应用评估
 
-**DFR 场景处理**：
-
-* **网络中断**：迁移超时（5 分钟）自动触发补偿，源节点恢复 VM 运行
-* **目标节点故障**：迁移前健康检查 + 迁移过程中监听目标心跳，故障立即回滚
-* **迁移卡住**：监控 QMP `migration` 事件，脏页传输速率 < 10MB/s 持续 60s 视为卡住，执行取消
-* **数据一致性**：共享存储保证磁盘数据一致，内存状态通过 QEMU 协议保证原子切换
-
-#### 3.2.2 冷迁移流程（本地盘）
-
-```mermaid
-graph TB
-    subgraph CMW[冷迁移工作流（Cold Migration Workflow）]
-        A[步骤1：关闭VM<br/>Shutdown VM] --> B[步骤2：打包磁盘<br/>Package Disk]
-        B --> C[步骤3：传输到目标节点<br/>Transfer to Target]
-        C --> D[步骤4：解压磁盘<br/>Unpack Disk]
-        D --> E[步骤5：生成目标配置<br/>Generate Config on Target]
-        E --> F[步骤6：启动VM<br/>Start VM on Target]
-        F --> G[步骤7：清理源端<br/>Cleanup Source]
-        G --> H[步骤8：更新元数据<br/>Update Metadata]
-    end
-    
-    A -->|失败| A_C[补偿：尝试重启VM<br/>Compensate: Restart VM]
-    B -->|失败| B_C[补偿：重启VM<br/>Compensate: Restart VM]
-    C -->|失败| C_C[补偿：删除目标文件+重启源VM<br/>Compensate: Delete Target+Restart]
-    D -->|失败| D_C[补偿：删除目标文件<br/>Compensate: Delete Target Files]
-    E -->|失败| E_C[补偿：清理目标节点<br/>Compensate: Cleanup Target]
-    F -->|失败| F_C[补偿：清理目标+重启源VM<br/>Compensate: Cleanup+Restart Source]
-    
-    style H fill:#90EE90
-    style A_C fill:#FFB6C1
-    style B_C fill:#FFB6C1
-    style C_C fill:#FFB6C1
-    style D_C fill:#FFB6C1
-    style E_C fill:#FFB6C1
-    style F_C fill:#FFB6C1
-```
-
-**DFR 场景处理**：
-
-* **传输中断**：使用 rsync 支持断点续传，记录已传输进度
-* **磁盘损坏**：传输前计算 SHA256，传输后校验，不匹配则重传
-* **目标空间不足**：传输前检查可用空间 ≥ 磁盘大小 * 1.2（压缩率预留）
-
----
-
-### 3.3 VM 销毁工作流
+**适用场景**:
 
 ```mermaid
 graph LR
-    subgraph DVW[销毁工作流（Destroy VM Workflow）]
-        A[步骤1：标记删除状态<br/>Mark as Deleting] --> B[步骤2：通过QMP关闭VM<br/>Shutdown via QMP]
-        B --> C[步骤3：删除虚拟磁盘<br/>Delete Virtual Disk]
-        C --> D[步骤4：清理网络配置<br/>Cleanup Network]
-        D --> E[步骤5：回收配额<br/>Release Quota]
-        E --> F[步骤6：删除元数据<br/>Delete Metadata]
+    subgraph 必须使用SAGA的复杂操作
+        A1[虚拟机创建] --> A2[跨节点迁移]
+        A2 --> A3[磁盘扩容]
+        A3 --> A4[批量操作]
+        A4 --> A5[灾难恢复]
     end
     
-    A -->|失败| A_C[补偿：恢复原状态<br/>Compensate: Restore State]
-    B -->|失败| B_C[补偿：强制杀进程<br/>Compensate: Force Kill]
-    C -->|失败| C_C[日志告警<br/>Log Alert]
-    D -->|失败| D_C[异步清理<br/>Async Cleanup]
+    subgraph 可选直调的简单操作
+        B1[虚拟机启动] --> B2[虚拟机停止]
+        B2 --> B3[状态查询]
+        B3 --> B4[资源监控]
+    end
     
-    style F fill:#90EE90
-    style A_C fill:#FFB6C1
-    style B_C fill:#FFB6C1
-    style C_C fill:#FFFF99
-    style D_C fill:#FFFF99
+    style A1 fill:#FF6B6B
+    style A2 fill:#FF6B6B
+    style A3 fill:#FF6B6B
+    style A4 fill:#FF6B6B
+    style A5 fill:#FF6B6B
+    style B1 fill:#4ECDC4
+    style B2 fill:#4ECDC4
+    style B3 fill:#4ECDC4
+    style B4 fill:#4ECDC4
 ```
 
-**关键设计**：
+**方案优势**:
 
-* **删除失败容忍**：步骤 3、4 失败不阻塞工作流，记录到"待清理列表"，异步重试
-* **配额强一致**：即使磁盘删除失败，配额也会回收（避免配额泄漏）
-* **幂等性**：所有删除操作支持重复调用
+1. **最终一致性保障**:即使在网络分区、节点故障情况下也能保证状态收敛
+2. **故障可观测性**:DTM 提供完整的事务日志和状态机视图
+3. **灵活编排**:支持串行、并行、条件分支等复杂业务流程
+4. **性能可控**:根据 DTM 官方测试[2],TPS 可达 30000+,P99 延迟 < 50ms
 
----
+**关键挑战**:
 
-## 四、系统架构设计
+1. **补偿逻辑复杂性**:需要精心设计每个步骤的回滚操作
+2. **外部依赖故障**:存储/网络服务异常时需要额外的容错处理
+3. **事务日志持久化**:MySQL 故障可能导致事务状态丢失
 
-### 4.1 整体架构图
+### 2.3 SAGA Workflow 核心概念详解
+
+#### 2.3.1 正向步骤设计原则
+
+每个正向步骤必须满足:
+
+1. **原子性**:步骤内部操作要么全部成功,要么全部失败
+2. **持久化**:关键状态变更必须落盘后才返回成功
+3. **超时控制**:设置合理超时避免无限等待
+
+```go
+// 正向步骤接口定义
+type ForwardAction interface {
+    // Execute 执行正向操作
+    // 返回值: error - 业务错误会触发补偿流程
+    Execute(ctx context.Context, params interface{}) error
+    
+    // Name 返回步骤名称,用于日志追踪
+    Name() string
+    
+    // Timeout 返回步骤超时时间
+    Timeout() time.Duration
+}
+```
+
+#### 2.3.2 补偿步骤设计原则
+
+补偿步骤必须满足:
+
+1. **幂等性**:多次执行结果一致,不会产生副作用
+2. **最终成功**:通过重试保证最终能完成补偿
+3. **资源清理**:释放正向步骤分配的所有资源
+
+```go
+// 补偿步骤接口定义
+type CompensationAction interface {
+    // Compensate 执行补偿操作
+    // 必须保证幂等性,允许被多次调用
+    Compensate(ctx context.Context, params interface{}) error
+    
+    // Name 返回步骤名称
+    Name() string
+    
+    // MaxRetries 返回最大重试次数
+    MaxRetries() int
+}
+```
+
+#### 2.3.3 重试策略设计
+
+DTM 支持灵活的重试策略配置:
+
+```go
+// 重试配置
+type RetryConfig struct {
+    // 最大重试次数
+    MaxAttempts int
+    
+    // 初始退避时间
+    InitialBackoff time.Duration
+    
+    // 最大退避时间
+    MaxBackoff time.Duration
+    
+    // 退避倍数
+    BackoffMultiplier float64
+    
+    // 可重试的错误类型
+    RetryableErrors []error
+}
+
+// 默认重试策略:指数退避
+// 1s -> 2s -> 4s -> 8s -> 16s -> 32s (最大)
+var DefaultRetryConfig = RetryConfig{
+    MaxAttempts:       6,
+    InitialBackoff:    1 * time.Second,
+    MaxBackoff:        32 * time.Second,
+    BackoffMultiplier: 2.0,
+    RetryableErrors: []error{
+        ErrNetworkTimeout,
+        ErrServiceUnavailable,
+        ErrResourceBusy,
+    },
+}
+```
+
+#### 2.3.4 幂等性保障机制
+
+通过全局事务ID(GAID)和本地事务版本号实现:
+
+```go
+// 幂等键生成
+type IdempotencyKey struct {
+    GAID      string // DTM全局事务ID
+    BranchID  string // 分支事务ID
+    Operation string // 操作类型
+    Version   int64  // 版本号
+}
+
+// 幂等性检查
+func (s *VMService) CreateVMIdempotent(ctx context.Context, req *CreateVMRequest) error {
+    key := IdempotencyKey{
+        GAID:      req.TransactionID,
+        BranchID:  req.BranchID,
+        Operation: "create_vm",
+        Version:   req.Version,
+    }
+    
+    // 检查操作是否已执行
+    if result, exists := s.idempotencyCache.Get(key); exists {
+        return result.Error // 返回缓存的结果
+    }
+    
+    // 执行实际操作
+    err := s.doCreateVM(ctx, req)
+    
+    // 缓存结果(成功或失败都缓存)
+    s.idempotencyCache.Set(key, IdempotentResult{Error: err})
+    
+    return err
+}
+```
+
+## 三、虚拟机生命周期 MVP 设计
+
+### 3.1 系统架构设计
 
 ```mermaid
 graph TB
-    subgraph UL[用户层（User Layer）]
-        API[RESTful API Gateway]
+    subgraph API层[API层（API Layer）]
+        API[RESTful API<br/>服务]
     end
     
-    subgraph CP[控制平面（Control Plane）]
-        CTL[VM Controller]
-        QUOTA[Quota Manager]
-        SCHED[Scheduler]
-        DTM[DTM Server<br/>分布式事务协调器]
+    subgraph 编排层[编排层（Orchestration Layer）]
+        SAGA[SAGA协调器<br/>（DTM Client）]
+        WF[工作流引擎<br/>（Workflow Engine）]
     end
     
-    subgraph DP[数据平面（Data Plane）]
-        PM1[物理节点1<br/>PM Agent]
-        PM2[物理节点2<br/>PM Agent]
-        PM3[物理节点N<br/>PM Agent]
+    subgraph 服务层[服务层（Service Layer）]
+        VMS[虚拟机服务<br/>（VM Service）]
+        STORE[存储服务<br/>（Storage Service）]
+        NET[网络服务<br/>（Network Service）]
+        RES[资源管理<br/>（Resource Manager）]
     end
     
-    subgraph SL[存储层（Storage Layer）]
-        MYSQL[mysql;<br/>元数据存储]
-        SHARED[共享存储<br/>VS]
+    subgraph 执行层[执行层（Execution Layer）]
+        QMP[QMP客户端<br/>（QMP Client）]
+        QEMU[QEMU进程]
     end
     
-    API --> CTL
-    CTL --> QUOTA
-    CTL --> SCHED
-    CTL --> DTM
+    subgraph 持久层[持久层（Persistence Layer）]
+        MYSQL[(MySQL数据库)]
+        DTM[DTM服务器<br/>（事务协调）]
+    end
     
-    DTM -.调用SAGA步骤.-> CTL
-    CTL --> PM1
-    CTL --> PM2
-    CTL --> PM3
+    API --> SAGA
+    SAGA --> WF
+    WF --> VMS
+    WF --> STORE
+    WF --> NET
+    VMS --> RES
+    VMS --> QMP
+    QMP --> QEMU
     
-    CTL --> MYSQL
-    QUOTA --> MYSQL
+    SAGA -.事务日志.-> DTM
+    VMS -.状态持久化.-> MYSQL
+    STORE -.配置存储.-> MYSQL
+    NET -.网络拓扑.-> MYSQL
+    DTM -.事务状态.-> MYSQL
     
-    PM1 --> SHARED
-    PM2 --> SHARED
-    PM3 --> SHARED
-    
-    PM1 -.QMP协议.-> QEMU1[QEMU/KVM]
-    PM2 -.QMP协议.-> QEMU2[QEMU/KVM]
-    PM3 -.QMP协议.-> QEMU3[QEMU/KVM]
-    
-    style DTM fill:#FFD700
-    style MYSQL fill:#87CEEB
-    style SHARED fill:#87CEEB
+    style API层 fill:#E3F2FD
+    style 编排层 fill:#FFF3E0
+    style 服务层 fill:#E8F5E9
+    style 执行层 fill:#FCE4EC
+    style 持久层 fill:#F3E5F5
 ```
 
-### 4.2 组件职责说明
+**架构分层说明**:
 
-| 组件                | 职责                    | 技术选型           | 资源占用              |
-| ----------------- | --------------------- | -------------- | ----------------- |
-| **VM Controller** | 接收 API 请求，编排 SAGA 工作流 | Go + Gin       | 100MB 内存，<1% CPU  |
-| **DTM Server**    | 分布式事务协调，管理 SAGA 状态    | DTM 官方镜像       | 50MB 内存，<0.5% CPU |
-| **Quota Manager** | 配额分配、预留、回收            | 内嵌在 Controller | -                 |
-| **Scheduler**     | 节点选择算法                | 内嵌在 Controller | -                 |
-| **PM Agent**      | 执行节点本地操作（磁盘、网络、QMP调用） | Go + systemd   | 30MB 内存/节点        |
-| **MYSQL**          | 存储 VM 元数据、配额信息        | MYSQL     | 200MB 内存（3节点集群）   |
+1. **API 层**:提供 RESTful 接口,处理认证授权和请求参数校验
+2. **编排层**:负责 SAGA 事务编排和工作流状态机管理
+3. **服务层**:实现具体的业务逻辑,包括虚拟机、存储、网络管理
+4. **执行层**:直接操作 QEMU 进程,通过 QMP 协议执行底层命令
+5. **持久层**:存储虚拟机元数据、事务日志和配置信息
 
-**性价比分析**：
-
-* 控制平面总资源 < 500MB 内存，适合百节点规模
-
-
----
-
-## 五、资源实体层次结构
-
-### 5.1 Tree Style 部署架构
-
-```
-集群（Cluster）
-├── 租户A（Tenant A）
-│   ├── 用户A1（User A1）
-│   │   ├── VM-001（运行中，PM1）
-│   │   │   ├── CPU: 4 核
-│   │   │   ├── 内存: 8GB
-│   │   │   └── 磁盘: /dev/vda（100GB，共享存储）
-│   │   └── VM-002（已关机，PM2）
-│   │       ├── CPU: 2 核
-│   │       ├── 内存: 4GB
-│   │       └── 磁盘: /var/lib/vms/vm-002/disk.qcow2（本地盘）
-│   └── 用户A2（User A2）
-│       └── VM-003（运行中，PM1）
-│
-├── 租户B（Tenant B）
-│   └── 用户B1（User B1）
-│       ├── VM-004（迁移中，PM2 → PM3）
-│       └── VM-005（运行中，PM3）
-│
-└── 物理节点池（PM Pool）
-    ├── PM1（192.168.1.101）
-    │   ├── 状态: 健康
-    │   ├── 资源: CPU 64核（已用32核），内存 256GB（已用128GB）
-    │   └── 虚拟机: [VM-001, VM-003]
-    │
-    ├── PM2（192.168.1.102）
-    │   ├── 状态: 健康
-    │   ├── 资源: CPU 64核（已用16核），内存 256GB（已用64GB）
-    │   └── 虚拟机: [VM-002, VM-004（迁移中）]
-    │
-    └── PM3（192.168.1.103）
-        ├── 状态: 维护中
-        ├── 资源: CPU 64核（已用8核），内存 256GB（已用32GB）
-        └── 虚拟机: [VM-004（迁移目标）, VM-005]
-```
-
-### 5.2 数据模型关系图
+### 3.2 数据模型设计
 
 ```mermaid
 erDiagram
-    TENANT ||--o{ USER : contains
-    USER ||--o{ VM : owns
-    VM ||--|| PM : runs_on
-    PM ||--o{ VM : hosts
-    USER ||--|| QUOTA : has
+    TENANT ||--o{ VM : 拥有
+    PM ||--o{ VM : 运行
+    VM ||--o{ DISK : 挂载
+    VM ||--o{ NIC : 配置
+    VM ||--|| RESOURCE_QUOTA : 限制
     
     TENANT {
         string tenant_id PK
         string name
-        timestamp created_at
-    }
-    
-    USER {
-        string user_id PK
-        string tenant_id FK
-        string username
-    }
-    
-    QUOTA {
-        string user_id PK
-        int cpu_limit
-        int memory_limit_gb
-        int disk_limit_gb
-        int cpu_used
-        int memory_used_gb
-        int disk_used_gb
-    }
-    
-    VM {
-        string vm_id PK
-        string user_id FK
-        string pm_id FK
-        string state
-        int cpu_cores
-        int memory_gb
-        string disk_path
+        int max_vms
         timestamp created_at
     }
     
     PM {
         string pm_id PK
-        string ip_address
-        string state
-        int total_cpu
-        int total_memory_gb
-        int available_cpu
-        int available_memory_gb
+        string hostname
+        int cpu_cores
+        int memory_mb
+        string status
+        timestamp updated_at
+    }
+    
+    VM {
+        string vm_id PK
+        string tenant_id FK
+        string pm_id FK
+        string name
+        string status
+        int vcpus
+        int memory_mb
+        string qmp_socket
+        timestamp created_at
+    }
+    
+    DISK {
+        string disk_id PK
+        string vm_id FK
+        string type
+        int size_gb
+        string backend_path
+        bool shared_storage
+    }
+    
+    NIC {
+        string nic_id PK
+        string vm_id FK
+        string mac_address
+        string network_id
+        string bridge
+    }
+    
+    RESOURCE_QUOTA {
+        string vm_id PK_FK
+        int cpu_quota
+        int memory_quota
+        bool overcommit_enabled
     }
 ```
 
----
+### 3.3 核心业务场景 SAGA 实现
 
-## 六、RESTful API 设计概要
+#### 3.3.1 场景一:虚拟机创建
 
-### 6.1 核心 API 端点
+**业务流程图**:
 
-```
-基础路径: https://api.example.com/v1
-
-租户管理:
-  POST   /tenants                    # 创建租户
-  GET    /tenants/{tenant_id}        # 查询租户信息
-
-用户管理:
-  POST   /tenants/{tenant_id}/users  # 创建用户
-  GET    /users/{user_id}/quota      # 查询配额
-
-虚拟机生命周期:
-  POST   /vms                        # 创建 VM（触发 SAGA 工作流）
-  GET    /vms/{vm_id}                # 查询 VM 详情
-  DELETE /vms/{vm_id}                # 销毁 VM（触发 SAGA 工作流）
-  
-  POST   /vms/{vm_id}/start          # 启动 VM（直调）
-  POST   /vms/{vm_id}/shutdown       # 关机 VM（直调）
-  POST   /vms/{vm_id}/migrate        # 迁移 VM（触发 SAGA 工作流）
-  PUT    /vms/{vm_id}/config         # 升级配置（触发 SAGA 工作流）
-
-节点管理:
-  GET    /pms                        # 列出所有节点
-  GET    /pms/{pm_id}                # 查询节点详情
-  GET    /pms/{pm_id}/vms            # 查询节点上的 VM 列表
-  PUT    /pms/{pm_id}/maintain       # 设置节点维护状态
-
-监控查询:
-  GET    /vms/{vm_id}/metrics        # VM 监控指标
-  GET    /pms/{pm_id}/metrics        # 节点监控指标
+```mermaid
+stateDiagram-v2
+    [*] --> 1_资源预分配
+    1_资源预分配 --> 2_创建磁盘
+    2_创建磁盘 --> 3_配置网络
+    3_配置网络 --> 4_生成QEMU配置
+    4_生成QEMU配置 --> 5_启动QEMU进程
+    5_启动QEMU进程 --> 6_连接QMP
+    6_连接QMP --> 7_更新元数据
+    7_更新元数据 --> [*]
+    
+    1_资源预分配 --> C1_释放资源 : 失败
+    2_创建磁盘 --> C2_删除磁盘 : 失败
+    3_配置网络 --> C3_清理网络 : 失败
+    4_生成QEMU配置 --> C4_删除配置 : 失败
+    5_启动QEMU进程 --> C5_停止进程 : 失败
+    6_连接QMP --> C6_断开连接 : 失败
+    7_更新元数据 --> C7_回滚数据 : 失败
+    
+    C1_释放资源 --> [*]
+    C2_删除磁盘 --> C1_释放资源
+    C3_清理网络 --> C2_删除磁盘
+    C4_删除配置 --> C3_清理网络
+    C5_停止进程 --> C4_删除配置
+    C6_断开连接 --> C5_停止进程
+    C7_回滚数据 --> C6_断开连接
 ```
 
-### 6.2 关系查询示例
+**完整实现代码**:
 
-**查询租户下所有 VM**：
+```go
+package vm
 
-```http
-GET /tenants/{tenant_id}/vms?user_id={user_id}&state=running
-```
+import (
+    "context"
+    "fmt"
+    "time"
+    
+    "github.com/dtm-labs/client/dtmcli"
+    "github.com/dtm-labs/client/workflow"
+)
 
-**查询节点资源使用情况**：
+// CreateVMRequest 创建虚拟机请求
+type CreateVMRequest struct {
+    TenantID     string `json:"tenant_id"`
+    VMID         string `json:"vm_id"`
+    Name         string `json:"name"`
+    VCPUs        int    `json:"vcpus"`
+    MemoryMB     int    `json:"memory_mb"`
+    DiskSizeGB   int    `json:"disk_size_gb"`
+    NetworkID    string `json:"network_id"`
+    PMID         string `json:"pm_id"` // 可选,为空则自动调度
+    SharedStorage bool   `json:"shared_storage"`
+}
 
-```http
-GET /pms/{pm_id}?include=vms,metrics
-Response:
-{
-  "pm_id": "pm-001",
-  "ip": "192.168.1.101",
-  "resources": {
-    "cpu": {"total": 64, "used": 32, "available": 32},
-    "memory_gb": {"total": 256, "used": 128, "available": 128}
-  },
-  "vms": [
-    {"vm_id": "vm-001", "user_id": "user-a1", "cpu": 4, "memory_gb": 8},
-    {"vm_id": "vm-003", "user_id": "user-a2", "cpu": 2, "memory_gb": 4}
-  ]
+// CreateVMSaga 虚拟机创建SAGA编排
+func (s *VMService) CreateVMSaga(ctx context.Context, req *CreateVMRequest) error {
+    // 初始化DTM Workflow
+    wfName := fmt.Sprintf("create_vm_%s", req.VMID)
+    err := workflow.Register(wfName, func(wf *workflow.Workflow, data []byte) error {
+        // 步骤1:资源预分配
+        wf.NewBranch().OnRollback(func(bb *dtmcli.BranchBarrier) error {
+            return s.compensateResourceAllocation(ctx, req.VMID)
+        })
+        err := s.allocateResources(wf.Context, req)
+        if err != nil {
+            return err
+        }
+        
+        // 步骤2:创建磁盘
+        wf.NewBranch().OnRollback(func(bb *dtmcli.BranchBarrier) error {
+            return s.compensateCreateDisk(ctx, req.VMID)
+        })
+        diskID, err := s.createDisk(wf.Context, req)
+        if err != nil {
+            return err
+        }
+        
+        // 步骤3:配置网络
+        wf.NewBranch().OnRollback(func(bb *dtmcli.BranchBarrier) error {
+            return s.compensateNetworkConfig(ctx, req.VMID)
+        })
+        nicID, err := s.configureNetwork(wf.Context, req)
+        if err != nil {
+            return err
+        }
+        
+        // 步骤4:生成QEMU配置
+        wf.NewBranch().OnRollback(func(bb *dtmcli.BranchBarrier) error {
+            return s.compensateQEMUConfig(ctx, req.VMID)
+        })
+        configPath, err := s.generateQEMUConfig(wf.Context, req, diskID, nicID)
+        if err != nil {
+            return err
+        }
+        
+        // 步骤5:启动QEMU进程
+        wf.NewBranch().OnRollback(func(bb *dtmcli.BranchBarrier) error {
+            return s.compensateQEMUProcess(ctx, req.VMID)
+        })
+        pid, err := s.startQEMUProcess(wf.Context, req.VMID, configPath)
+        if err != nil {
+            return err
+        }
+        
+        // 步骤6:连接QMP
+        wf.NewBranch().OnRollback(func(bb *dtmcli.BranchBarrier) error {
+            return s.compensateQMPConnection(ctx, req.VMID)
+        })
+        qmpSocket, err := s.connectQMP(wf.Context, req.VMID, pid)
+        if err != nil {
+            return err
+        }
+        
+        // 步骤7:更新元数据
+        wf.NewBranch().OnRollback(func(bb *dtmcli.BranchBarrier) error {
+            return s.compensateMetadata(ctx, req.VMID)
+        })
+        return s.updateMetadata(wf.Context, req, qmpSocket, "running")
+    })
+    
+    if err != nil {
+        return fmt.Errorf("注册SAGA工作流失败: %w", err)
+    }
+    
+    // 执行Workflow
+    return workflow.Execute(wfName, req.VMID, nil)
+}
+
+// ==================== 正向步骤实现 ====================
+
+// allocateResources 步骤1:资源预分配
+func (s *VMService) allocateResources(ctx context.Context, req *CreateVMRequest) error {
+    // 1. 选择目标物理机(如果未指定)
+    if req.PMID == "" {
+        pm, err := s.scheduler.SelectPM(ctx, req.VCPUs, req.MemoryMB)
+        if err != nil {
+            return fmt.Errorf("调度失败: %w", err)
+        }
+        req.PMID = pm.PMID
+    }
+    
+    // 2. 检查资源配额
+    quota, err := s.quotaManager.GetTenantQuota(ctx, req.TenantID)
+    if err != nil {
+        return err
+    }
+    if !quota.CanAllocate(req.VCPUs, req.MemoryMB) {
+        return ErrQuotaExceeded
+    }
+    
+    // 3. 预留资源(乐观锁)
+    reservation := &ResourceReservation{
+        VMID:     req.VMID,
+        PMID:     req.PMID,
+        VCPUs:    req.VCPUs,
+        MemoryMB: req.MemoryMB,
+        ExpireAt: time.Now().Add(10 * time.Minute),
+    }
+    
+    return s.resourceManager.Reserve(ctx, reservation)
+}
+
+// compensateResourceAllocation 补偿步骤1:释放预留资源
+func (s *VMService) compensateResourceAllocation(ctx context.Context, vmID string) error {
+    // 幂等性保障:检查资源是否已释放
+    if released, _ := s.resourceManager.IsReleased(ctx, vmID); released {
+        return nil
+    }
+    
+    // 释放预留资源
+    return s.resourceManager.Release(ctx, vmID)
+}
+
+// createDisk 步骤2:创建磁盘
+func (s *VMService) createDisk(ctx context.Context, req *CreateVMRequest) (string, error) {
+    diskReq := &CreateDiskRequest{
+        DiskID:        generateDiskID(req.VMID),
+        VMID:          req.VMID,
+        SizeGB:        req.DiskSizeGB,
+        Type:          "qcow2",
+        SharedStorage: req.SharedStorage,
+        PMID:          req.PMID,
+    }
+    
+    // 调用存储服务创建磁盘
+    disk, err := s.storageService.CreateDisk(ctx, diskReq)
+    if err != nil {
+        return "", fmt.Errorf("创建磁盘失败: %w", err)
+    }
+    
+    return disk.DiskID, nil
+}
+
+// compensateCreateDisk 补偿步骤2:删除磁盘
+func (s *VMService) compensateCreateDisk(ctx context.Context, vmID string) error {
+    diskID := generateDiskID(vmID)
+    
+    // 幂等性检查:磁盘是否已删除
+    exists, err := s.storageService.DiskExists(ctx, diskID)
+    if err != nil {
+        return err
+    }
+    if !exists {
+        return nil // 已删除,幂等返回成功
+    }
+    
+    // 删除磁盘
+    return s.storageService.DeleteDisk(ctx, diskID)
+}
+
+// configureNetwork 步骤3:配置网络
+func (s *VMService) configureNetwork(ctx context.Context, req *CreateVMRequest) (string, error) {
+    nicReq := &CreateNICRequest{
+        NICID:     generateNICID(req.VMID),
+        VMID:      req.VMID,
+        NetworkID: req.NetworkID,
+        PMID:      req.PMID,
+    }
+    
+    // 调用网络服务创建NIC
+    nic, err := s.networkService.CreateNIC(ctx, nicReq)
+    if err != nil {
+        return "", fmt.Errorf("配置网络失败: %w", err)
+    }
+    
+    return nic.NICID, nil
+}
+
+// compensateNetworkConfig 补偿步骤3:清理网络配置
+func (s *VMService) compensateNetworkConfig(ctx context.Context, vmID string) error {
+    nicID := generateNICID(vmID)
+    
+    // 幂等性检查
+    exists, err := s.networkService.NICExists(ctx, nicID)
+    if err != nil {
+        return err
+    }
+    if !exists {
+        return nil
+    }
+    
+    // 删除NIC
+    return s.networkService.DeleteNIC(ctx, nicID)
+}
+
+// generateQEMUConfig 步骤4:生成QEMU配置
+func (s *VMService) generateQEMUConfig(ctx context.Context, req *CreateVMRequest, 
+    diskID, nicID string) (string, error) {
+    
+    // 获取磁盘路径
+    disk, err := s.storageService.GetDisk(ctx, diskID)
+    if err != nil {
+        return "", err
+    }
+    
+    // 获取网络配置
+    nic, err := s.networkService.GetNIC(ctx, nicID)
+    if err != nil {
+        return "", err
+    }
+    
+    // 生成QEMU命令行参数
+    config := &QEMUConfig{
+        VMID:      req.VMID,
+        Name:      req.Name,
+        VCPUs:     req.VCPUs,
+        MemoryMB:  req.MemoryMB,
+        DiskPath:  disk.BackendPath,
+        MACAddr:   nic.MACAddress,
+        Bridge:    nic.Bridge,
+        QMPSocket: fmt.Sprintf("/var/run/qemu/%s.sock", req.VMID),
+    }
+    
+    // 保存配置文件
+    configPath := fmt.Sprintf("/etc/qemu/%s.json", req.VMID)
+    err = s.configStore.Save(ctx, configPath, config)
+    if err != nil {
+        return "", fmt.Errorf("保存配置失败: %w", err)
+    }
+    
+    return configPath, nil
+}
+
+// compensateQEMUConfig 补偿步骤4:删除配置文件
+func (s *VMService) compensateQEMUConfig(ctx context.Context, vmID string) error {
+    configPath := fmt.Sprintf("/etc/qemu/%s.json", vmID)
+    
+    // 幂等性:文件不存在视为已删除
+    exists, _ := s.configStore.Exists(ctx, configPath)
+    if !exists {
+        return nil
+    }
+    
+    return s.configStore.Delete(ctx, configPath)
+}
+
+// startQEMUProcess 步骤5:启动QEMU进程
+func (s *VMService) startQEMUProcess(ctx context.Context, vmID, configPath string) (int, error) {
+    // 加载配置
+    config, err := s.configStore.Load(ctx, configPath)
+    if err != nil {
+        return 0, err
+    }
+    
+    // 构建QEMU命令
+    cmd := s.buildQEMUCommand(config)
+    
+    // 启动进程
+    process, err := s.processManager.Start(ctx, cmd)
+    if err != nil {
+        return 0, fmt.Errorf("启动QEMU进程失败: %w", err)
+    }
+    
+    // 等待QEMU初始化完成(最多30秒)
+    if err := s.waitForQEMUReady(ctx, process.PID, 30*time.Second); err != nil {
+        s.processManager.Kill(ctx, process.PID)
+        return 0, err
+    }
+    
+    return process.PID, nil
+}
+
+// compensateQEMUProcess 补偿步骤5:停止QEMU进程
+func (s *VMService) compensateQEMUProcess(ctx context.Context, vmID string) error {
+    // 查找进程PID
+    pid, err := s.processManager.FindByVMID(ctx, vmID)
+    if err != nil {
+        if err == ErrProcessNotFound {
+            return nil // 进程不存在,幂等返回成功
+        }
+        return err
+    }
+    
+    // 优雅停止(先SIGTERM,10秒后SIGKILL)
+    return s.processManager.GracefulStop(ctx, pid, 10*time.Second)
+}
+
+// connectQMP 步骤6:连接QMP
+func (s *VMService) connectQMP(ctx context.Context, vmID string, pid int) (string, error) {
+    qmpSocket := fmt.Sprintf("/var/run/qemu/%s.sock", vmID)
+    
+    // 建立QMP连接
+    client, err := s.qmpManager.Connect(ctx, qmpSocket)
+    if err != nil {
+        return "", fmt.Errorf("连接QMP失败: %w", err)
+    }
+    
+    // 执行QMP握手
+    if err := client.Handshake(ctx); err != nil {
+        client.Close()
+        return "", err
+    }
+    
+    // 注册到连接池
+    s.qmpManager.Register(vmID, client)
+    
+    return qmpSocket, nil
+}
+
+// compensateQMPConnection 补偿步骤6:断开QMP连接
+func (s *VMService) compensateQMPConnection(ctx context.Context, vmID string) error {
+    // 幂等性:检查连接是否存在
+    client := s.qmpManager.Get(vmID)
+    if client == nil {
+        return nil // 连接不存在,幂等返回成功
+    }
+    
+    // 关闭连接
+    client.Close()
+    s.qmpManager.Unregister(vmID)
+    
+    return nil
+}
+
+// updateMetadata 步骤7:更新元数据
+func (s *VMService) updateMetadata(ctx context.Context, req *CreateVMRequest, 
+    qmpSocket, status string) error {
+    
+    vm := &VM{
+        VMID:      req.VMID,
+        TenantID:  req.TenantID,
+        PMID:      req.PMID,
+        Name:      req.Name,
+        VCPUs:     req.VCPUs,
+        MemoryMB:  req.MemoryMB,
+        Status:    status,
+        QMPSocket: qmpSocket,
+        CreatedAt: time.Now(),
+    }
+    
+    // 持久化到数据库
+    return s.vmRepo.Create(ctx, vm)
+}
+
+// compensateMetadata 补偿步骤7:回滚元数据
+func (s *VMService) compensateMetadata(ctx context.Context, vmID string) error {
+    // 幂等性:检查记录是否存在
+    exists, err := s.vmRepo.Exists(ctx, vmID)
+    if err != nil {
+        return err
+    }
+    if !exists {
+        return nil // 记录不存在,幂等返回成功
+    }
+    
+    // 删除数据库记录
+    return s.vmRepo.Delete(ctx, vmID)
+}
+
+// ==================== 辅助方法 ====================
+
+func generateDiskID(vmID string) string {
+    return fmt.Sprintf("%s-disk-0", vmID)
+}
+
+func generateNICID(vmID string) string {
+    return fmt.Sprintf("%s-nic-0", vmID)
+}
+
+func (s *VMService) buildQEMUCommand(config *QEMUConfig) []string {
+    return []string{
+        "qemu-system-x86_64",
+        "-name", config.Name,
+        "-machine", "pc-q35-6.2,accel=kvm",
+        "-cpu", "host",
+        "-smp", fmt.Sprintf("cpus=%d", config.VCPUs),
+        "-m", fmt.Sprintf("%dM", config.MemoryMB),
+        "-drive", fmt.Sprintf("file=%s,if=virtio,cache=none,aio=native", config.DiskPath),
+        "-netdev", fmt.Sprintf("bridge,id=net0,br=%s", config.Bridge),
+        "-device", fmt.Sprintf("virtio-net-pci,netdev=net0,mac=%s", config.MACAddr),
+        "-qmp", fmt.Sprintf("unix:%s,server,nowait", config.QMPSocket),
+        "-daemonize",
+        "-pidfile", fmt.Sprintf("/var/run/qemu/%s.pid", config.VMID),
+    }
+}
+
+func (s *VMService) waitForQEMUReady(ctx context.Context, pid int, timeout time.Duration) error {
+    deadline := time.Now().Add(timeout)
+    for time.Now().Before(deadline) {
+        // 检查进程是否存活
+        if !s.processManager.IsRunning(pid) {
+            return ErrQEMUProcessDied
+        }
+        
+        // 检查QMP socket是否可连接
+        qmpSocket := fmt.Sprintf("/var/run/qemu/%d.sock", pid)
+        if s.qmpManager.CanConnect(qmpSocket) {
+            return nil
+        }
+        
+        time.Sleep(500 * time.Millisecond)
+    }
+    
+    return ErrQEMUStartTimeout
 }
 ```
 
-**跨节点迁移 VM**：
+**DFR 场景处理**:
 
-```http
-POST /vms/vm-001/migrate
-Body:
-{
-  "target_pm_id": "pm-003",
-  "migration_type": "live"  // 或 "cold"
-}
-```
+| 故障场景          | 检测机制        | 处理策略           | 恢复时间   |
+| ------------- | ----------- | -------------- | ------ |
+| DTM Server 宕机 | 心跳检测(5s 间隔) | 自动故障转移到备节点     | < 15s  |
+| MySQL 主库故障    | 连接超时(3s)    | 切换到从库,事务日志重放   | < 30s  |
+| 存储服务不可用       | HTTP 503 响应 | 指数退避重试(最多 6 次) | < 2min |
+| 网络服务异常        | 连接超时        | 跳过并标记,异步修复     | 异步     |
+| QEMU 进程启动失败   | 进程退出码检查     | 立即回滚,释放所有资源    | < 10s  |
 
----
+#### 3.3.2 场景二:跨节点热迁移(共享存储)
 
-## 七、关键技术细节补充
-
-### 7.1 幂等性保证机制
-
-| 场景            | 实现方式                                                  |
-| ------------- | ----------------------------------------------------- |
-| **HTTP 请求重复** | 请求头携带 `X-Idempotency-Key`（UUID），Controller 记录已处理的 Key |
-| **SAGA 步骤重试** | 每个步骤内部检查操作结果，已完成则直接返回成功                               |
-| **磁盘/网络资源创建** | Agent 侧记录操作日志，Controller 查询状态避免重复创建                   |
-
-### 7.2 最终一致性保证
+**业务流程图**:
 
 ```mermaid
 sequenceDiagram
-    participant C as Controller
-    participant D as DTM Server
-    participant A as Agent
+    participant API as API服务
+    participant SAGA as SAGA协调器
+    participant SRC as 源节点VM服务
+    participant DST as 目标节点VM服务
+    participant QMP as QMP客户端
+    participant STORE as 存储服务
     
-    C->>D: 提交SAGA事务<br/>Submit SAGA
-    D->>C: 执行步骤1<br/>Execute Step 1
-    C->>A: 调用Agent API
-    A-->>C: 超时无响应<br/>Timeout
+    API->>SAGA: 1. 提交迁移请求
+    SAGA->>DST: 2. 目标节点资源预留
+    DST-->>SAGA: 预留成功
     
-    Note over D: 等待超时后触发重试<br/>Retry after timeout
-    D->>C: 重试步骤1<br/>Retry Step 1
-    C->>A: 再次调用
-    A-->>C: 成功（幂等）<br/>Success idempotent
+    SAGA->>STORE: 3. 验证共享存储可访问
+    STORE-->>SAGA: 验证通过
     
-    C-->>D: 步骤1完成<br/>Step 1 Done
-    D->>C: 执行步骤2<br/>Execute Step 2
+    SAGA->>SRC: 4. 源节点开始迁移
+    SRC->>QMP: 4.1 执行migrate命令
+    QMP-->>SRC: 迁移中...
     
-    Note over C: 步骤2失败<br/>Step 2 Failed
-    C-->>D: 失败响应<br/>Failure Response
+    Note over SRC,DST: 内存迭代复制<br/>（Memory Iterative Copy）
     
-    D->>C: 执行补偿步骤1<br/>Compensate Step 1
-    C->>A: 回滚操作
-    A-->>C: 补偿成功<br/>Compensate OK
+    SRC->>QMP: 4.2 进入停机阶段
+    QMP-->>SRC: VM已暂停
     
-    D->>D: 事务最终状态：失败<br/>Final State: Failed
+    SRC->>DST: 4.3 最终状态同步
+    DST->>QMP: 4.4 目标节点启动VM
+    QMP-->>DST: VM运行中
+    
+    SAGA->>SAGA: 5. 更新元数据
+    SAGA->>SRC: 6. 清理源节点资源
+    SRC-->>SAGA: 清理完成
+    
+    SAGA-->>API: 迁移成功
 ```
 
-### 7.3 性能优化策略
+**完整实现代码**:
 
-1. **并发控制**：同一节点同时创建 VM 数量限制为 `节点 CPU 核心数 / 4`（避免资源竞争）
-2. **批量操作**：支持批量创建 VM，共享节点选择和配额检查逻辑
-3. **缓存策略**：
+```go
+// MigrateVMRequest 虚拟机迁移请求
+type MigrateVMRequest struct {
+    VMID            string `json:"vm_id"`
+    TargetPMID      string `json:"target_pm_id"`
+    MaxDowntimeMS   int    `json:"max_downtime_ms"`   // 最大停机时间(毫秒)
+    MaxBandwidthMB  int    `json:"max_bandwidth_mb"`  // 最大带宽(MB/s)
+    AutoConverge    bool   `json:"auto_converge"`     // 自动收敛
+}
 
-   * 节点资源使用量缓存 30s（通过事件触发失效）
-   * QMP 连接池复用（每个 VM 保持 1 个长连接）
+// MigrateVMSaga 虚拟机热迁移SAGA编排
+func (s *VMService) MigrateVMSaga(ctx context.Context, req *MigrateVMRequest) error {
+    wfName := fmt.Sprintf("migrate_vm_%s", req.VMID)
+    
+    return workflow.Register(wfName, func(wf *workflow.Workflow, data []byte) error {
+        // 获取虚拟机当前状态
+        vm, err := s.vmRepo.Get(wf.Context, req.VMID)
+        if err != nil {
+            return err
+        }
+        
+        // 检查前置条件
+        if vm.Status != "running" {
+            return ErrVMNotRunning
+        }
+        
+        // 检查磁盘类型
+        disks, err := s.storageService.GetVMDisks(wf.Context, req.VMID)
+        if err != nil {
+            return err
+        }
+        
+        hasLocalDisk := false
+        for _, disk := range disks {
+            if !disk.SharedStorage {
+                hasLocalDisk = true
+                break
+            }
+        }
+        
+        if hasLocalDisk {
+            return ErrLocalDiskNotSupported // 本地盘不支持热迁移
+        }
+        
+        // 步骤1:目标节点资源预留
+        wf.NewBranch().OnRollback(func(bb *dtmcli.BranchBarrier) error {
+            return s.compensateTargetResourceReservation(ctx, req.VMID, req.TargetPMID)
+        })
+        err = s.reserveTargetResources(wf.Context, vm, req.TargetPMID)
+        if err != nil {
+            return err
+        }
+        
+        // 步骤2:验证共享存储
+        wf.NewBranch().OnRollback(func(bb *dtmcli.BranchBarrier) error {
+            return nil // 只读操作,无需补偿
+        })
+        err = s.verifySharedStorage(wf.Context, vm.VMID, req.TargetPMID)
+        if err != nil {
+            return err
+        }
+        
+        // 步骤3:设置迁移参数
+        wf.NewBranch().OnRollback(func(bb *dtmcli.BranchBarrier) error {
+            return s.compensateMigrationSetup(ctx, req.VMID)
+        })
+        err = s.setupMigration(wf.Context, vm, req)
+        if err != nil {
+            return err
+        }
+        
+        // 步骤4:执行迁移
+        wf.NewBranch().OnRollback(func(bb *dtmcli.BranchBarrier) error {
+            return s.compensateMigrationExecution(ctx, req.VMID)
+        })
+        migrationResult, err := s.executeMigration(wf.Context, vm, req)
+        if err != nil {
+            return err
+        }
+        
+        // 步骤5:更新元数据
+        wf.NewBranch().OnRollback(func(bb *dtmcli.BranchBarrier) error {
+            return s.compensateMigrationMetadata(ctx, req.VMID, vm.PMID)
+        })
+        err = s.updateMigrationMetadata(wf.Context, req.VMID, req.TargetPMID, migrationResult)
+        if err != nil {
+            return err
+        }
+        
+        // 步骤6:清理源节点
+        wf.NewBranch().OnRollback(func(bb *dtmcli.BranchBarrier) error {
+            return nil // 清理失败不影响迁移结果,异步重试
+        })
+        return s.cleanupSourceNode(wf.Context, vm.PMID, req.VMID)
+    })
+}
+
+// ==================== 正向步骤实现 ====================
+
+// reserveTargetResources 步骤1:目标节点资源预留
+func (s *VMService) reserveTargetResources(ctx context.Context, vm *VM, targetPMID string) error {
+    // 检查目标节点资源
+    pm, err := s.pmRepo.Get(ctx, targetPMID)
+    if err != nil {
+        return err
+    }
+    
+    if !pm.HasEnoughResources(vm.VCPUs, vm.MemoryMB) {
+        return ErrInsufficientResources
+    }
+    
+    // 预留资源
+    reservation := &ResourceReservation{
+        VMID:     vm.VMID,
+        PMID:     targetPMID,
+        VCPUs:    vm.VCPUs,
+        MemoryMB: vm.MemoryMB,
+        ExpireAt: time.Now().Add(30 * time.Minute), // 迁移预留时间更长
+    }
+    
+    return s.resourceManager.Reserve(ctx, reservation)
+}
+
+// compensateTargetResourceReservation 补偿步骤1:释放目标节点预留
+func (s *VMService) compensateTargetResourceReservation(ctx context.Context, vmID, targetPMID string) error {
+    return s.resourceManager.ReleaseOnPM(ctx, vmID, targetPMID)
+}
+
+// verifySharedStorage 步骤2:验证共享存储
+func (s *VMService) verifySharedStorage(ctx context.Context, vmID, targetPMID string) error {
+    disks, err := s.storageService.GetVMDisks(ctx, vmID)
+    if err != nil {
+        return err
+    }
+    
+    for _, disk := range disks {
+        // 检查目标节点是否能访问存储
+        accessible, err := s.storageService.CheckAccess(ctx, disk.BackendPath, targetPMID)
+        if err != nil {
+            return fmt.Errorf("检查存储访问失败: %w", err)
+        }
+        if !accessible {
+            return ErrStorageNotAccessible
+        }
+    }
+    
+    return nil
+}
+
+// setupMigration 步骤3:设置迁移参数
+func (s *VMService) setupMigration(ctx context.Context, vm *VM, req *MigrateVMRequest) error {
+    qmpClient := s.qmpManager.Get(vm.VMID)
+    if qmpClient == nil {
+        return ErrQMPNotConnected
+    }
+    
+    // 设置迁移能力
+    capabilities := map[string]bool{
+        "xbzrle":        true,  // 增量压缩
+        "auto-converge": req.AutoConverge,
+    }
+    
+    for cap, enabled := range capabilities {
+        if err := qmpClient.SetMigrationCapability(ctx, cap, enabled); err != nil {
+            return fmt.Errorf("设置迁移能力 %s 失败: %w", cap, err)
+        }
+    }
+    
+    // 设置迁移参数
+    params := &MigrationParameters{
+        MaxDowntime:  req.MaxDowntimeMS,
+        MaxBandwidth: req.MaxBandwidthMB * 1024 * 1024, // 转换为字节
+    }
+    
+    return qmpClient.SetMigrationParameters(ctx, params)
+}
+
+// compensateMigrationSetup 补偿步骤3:重置迁移参数
+func (s *VMService) compensateMigrationSetup(ctx context.Context, vmID string) error {
+    qmpClient := s.qmpManager.Get(vmID)
+    if qmpClient == nil {
+        return nil // QMP 已断开,无需重置
+    }
+    
+    // 重置为默认参数
+    defaultParams := &MigrationParameters{
+        MaxDowntime:  300,  // 300ms
+        MaxBandwidth: 32 * 1024 * 1024, // 32MB/s
+    }
+    
+    return qmpClient.SetMigrationParameters(ctx, defaultParams)
+}
+
+// executeMigration 步骤4:执行迁移
+func (s *VMService) executeMigration(ctx context.Context, vm *VM, req *MigrateVMRequest) (*MigrationResult, error) {
+    qmpClient := s.qmpManager.Get(vm.VMID)
+    if qmpClient == nil {
+        return nil, ErrQMPNotConnected
+    }
+    
+    // 构建迁移URI
+    targetPM, err := s.pmRepo.Get(ctx, req.TargetPMID)
+    if err != nil {
+        return nil, err
+    }
+    
+    migrationURI := fmt.Sprintf("tcp:%s:49152", targetPM.MigrationIP)
+    
+    // 启动迁移
+    if err := qmpClient.Migrate(ctx, migrationURI); err != nil {
+        return nil, fmt.Errorf("启动迁移失败: %w", err)
+    }
+    
+    // 监控迁移进度
+    result, err := s.monitorMigration(ctx, qmpClient, 10*time.Minute)
+    if err != nil {
+        // 尝试取消迁移
+        _ = qmpClient.MigrateCancel(ctx)
+        return nil, err
+    }
+    
+    return result, nil
+}
+
+// monitorMigration 监控迁移进度
+func (s *VMService) monitorMigration(ctx context.Context, qmpClient *QMPClient, timeout time.Duration) (*MigrationResult, error) {
+    deadline := time.Now().Add(timeout)
+    ticker := time.NewTicker(1 * time.Second)
+    defer ticker.Stop()
+    
+    for {
+        select {
+        case <-ctx.Done():
+            return nil, ctx.Err()
+        case <-time.After(time.Until(deadline)):
+            return nil, ErrMigrationTimeout
+        case <-ticker.C:
+            status, err := qmpClient.QueryMigration(ctx)
+            if err != nil {
+                return nil, err
+            }
+            
+            switch status.Status {
+            case "completed":
+                return &MigrationResult{
+                    TotalTime:   status.TotalTime,
+                    Downtime:    status.Downtime,
+                    SetupTime:   status.SetupTime,
+                    Transferred: status.RAM.Transferred,
+                }, nil
+            case "failed":
+                return nil, fmt.Errorf("迁移失败: %s", status.ErrorDesc)
+            case "cancelled":
+                return nil, ErrMigrationCancelled
+            case "active":
+                // 记录进度日志
+                s.logger.Infof("迁移进度: %d%%, 传输: %dMB/%dMB", 
+                    status.RAM.Transferred*100/status.RAM.Total,
+                    status.RAM.Transferred/(1024*1024),
+                    status.RAM.Total/(1024*1024))
+            }
+        }
+    }
+}
+
+// compensateMigrationExecution 补偿步骤4:取消迁移
+func (s *VMService) compensateMigrationExecution(ctx context.Context, vmID string) error {
+    qmpClient := s.qmpManager.Get(vmID)
+    if qmpClient == nil {
+        return nil // QMP 已断开,迁移已中止
+    }
+    
+    // 查询迁移状态
+    status, err := qmpClient.QueryMigration(ctx)
+    if err != nil {
+        return err
+    }
+    
+    // 只有在迁移进行中才需要取消
+    if status.Status == "active" {
+        return qmpClient.MigrateCancel(ctx)
+    }
+    
+    return nil
+}
+
+// updateMigrationMetadata 步骤5:更新元数据
+func (s *VMService) updateMigrationMetadata(ctx context.Context, vmID, targetPMID string, result *MigrationResult) error {
+    // 更新虚拟机所在节点
+    return s.vmRepo.UpdatePMID(ctx, vmID, targetPMID)
+}
+
+// compensateMigrationMetadata 补偿步骤5:回滚元数据
+func (s *VMService) compensateMigrationMetadata(ctx context.Context, vmID, originalPMID string) error {
+    return s.vmRepo.UpdatePMID(ctx, vmID, originalPMID)
+}
+
+// cleanupSourceNode 步骤6:清理源节点
+func (s *VMService) cleanupSourceNode(ctx context.Context, sourcePMID, vmID string) error {
+    // 断开QMP连接
+    qmpClient := s.qmpManager.Get(vmID)
+    if qmpClient != nil {
+        qmpClient.Close()
+        s.qmpManager.Unregister(vmID)
+    }
+    
+    // 删除源节点的配置文件
+    configPath := fmt.Sprintf("/etc/qemu/%s.json", vmID)
+    _ = s.configStore.Delete(ctx, configPath)
+    
+    // 释放源节点资源
+    return s.resourceManager.ReleaseOnPM(ctx, vmID, sourcePMID)
+}
+```
+
+**DFR 场景分析**:
+
+| 故障场景           | 影响              | 处理策略                  | 用户感知   |
+| -------------- | --------------- | --------------------- | ------ |
+| 迁移过程中网络中断      | 迁移失败,VM 仍在源节点运行 | 自动取消迁移,保持原状态          | 迁移失败提示 |
+| 目标节点 QEMU 启动失败 | 迁移失败            | 回滚元数据,释放目标节点资源        | 迁移失败提示 |
+| 共享存储短暂不可用      | 迁移暂停            | 等待存储恢复(最多 5 分钟)       | 迁移进度延迟 |
+| DTM 在迁移过程中宕机   | 事务挂起            | 新 DTM Leader 接管,从日志恢复 | 透明,无感知 |
+| MySQL 写入失败     | 元数据更新失败         | 回滚迁移,VM 回到源节点         | 迁移失败提示 |
+
+#### 3.3.3 场景三:批量创建虚拟机
+
+**并发控制策略**:
+
+```mermaid
+graph TB
+    subgraph 批量创建控制器[批量创建控制器（Batch Controller）]
+        BC[批量请求] --> SP[请求拆分<br/>（Request Split）]
+        SP --> LIM[并发限流<br/>（Concurrency Limiter）]
+        LIM --> WP[工作池<br/>（Worker Pool）]
+    end
+    
+    subgraph 工作池执行[工作池执行（Worker Execution）]
+        WP --> W1[Worker-1]
+        WP --> W2[Worker-2]
+        WP --> W3[Worker-N]
+        
+        W1 --> SAGA1[SAGA事务1]
+        W2 --> SAGA2[SAGA事务2]
+        W3 --> SAGAN[SAGA事务N]
+    end
+    
+    subgraph 结果聚合[结果聚合（Result Aggregation）]
+        SAGA1 --> AGG[聚合器<br/>（Aggregator）]
+        SAGA2 --> AGG
+        SAGAN --> AGG
+        
+        AGG --> RES[批量结果<br/>（Batch Result）]
+    end
+    
+    style 批量创建控制器 fill:#E3F2FD
+    style 工作池执行 fill:#FFF3E0
+    style 结果聚合 fill:#E8F5E9
+```
+
+**完整实现代码**:
+
+```go
+// BatchCreateVMRequest 批量创建虚拟机请求
+type BatchCreateVMRequest struct {
+    TenantID      string              `json:"tenant_id"`
+    VMRequests    []*CreateVMRequest  `json:"vm_requests"`
+    Concurrency   int                 `json:"concurrency"`    // 并发数,默认5
+    FailFast      bool                `json:"fail_fast"`      // 快速失败模式
+}
+
+// BatchCreateResult 批量创建结果
+type BatchCreateResult struct {
+    SuccessCount int                 `json:"success_count"`
+    FailureCount int                 `json:"failure_count"`
+    Results      []*VMCreateResult   `json:"results"`
+}
+
+// VMCreateResult 单个虚拟机创建结果
+type VMCreateResult struct {
+    VMID         string  `json:"vm_id"`
+    Success      bool    `json:"success"`
+    Error        string  `json:"error,omitempty"`
+    Duration     int64   `json:"duration_ms"`
+}
+
+// BatchCreateVMSaga 批量创建虚拟机SAGA编排
+func (s *VMService) BatchCreateVMSaga(ctx context.Context, req *BatchCreateVMRequest) (*BatchCreateResult, error) {
+    // 参数验证
+    if len(req.VMRequests) == 0 {
+        return nil, ErrEmptyBatchRequest
+    }
+    
+    if req.Concurrency <= 0 {
+        req.Concurrency = 5 // 默认并发数
+    }
+    
+    // 创建工作池
+    workerPool := workerpool.New(req.Concurrency)
+    
+    // 结果收集通道
+    resultChan := make(chan *VMCreateResult, len(req.VMRequests))
+    
+    // 错误控制
+    var (
+        errorOccurred atomic.Bool
+        wg            sync.WaitGroup
+    )
+    
+    // 提交任务
+    for _, vmReq := range req.VMRequests {
+        if req.FailFast && errorOccurred.Load() {
+            // 快速失败模式:已有错误则跳过后续任务
+            resultChan <- &VMCreateResult{
+                VMID:    vmReq.VMID,
+                Success: false,
+                Error:   "批量操作已失败,跳过执行",
+            }
+            continue
+        }
+        
+        wg.Add(1)
+        vmReqCopy := vmReq // 避免闭包变量问题
+        
+        workerPool.Submit(func() {
+            defer wg.Done()
+            
+            startTime := time.Now()
+            
+            // 执行单个虚拟机创建SAGA
+            err := s.CreateVMSaga(ctx, vmReqCopy)
+            
+            duration := time.Since(startTime).Milliseconds()
+            
+            result := &VMCreateResult{
+                VMID:     vmReqCopy.VMID,
+                Success:  err == nil,
+                Duration: duration,
+            }
+            
+            if err != nil {
+                result.Error = err.Error()
+                errorOccurred.Store(true)
+            }
+            
+            resultChan <- result
+        })
+    }
+    
+    // 等待所有任务完成
+    wg.Wait()
+    close(resultChan)
+    
+    // 聚合结果
+    batchResult := &BatchCreateResult{
+        Results: make([]*VMCreateResult, 0, len(req.VMRequests)),
+    }
+    
+    for result := range resultChan {
+        batchResult.Results = append(batchResult.Results, result)
+        if result.Success {
+            batchResult.SuccessCount++
+        } else {
+            batchResult.FailureCount++
+        }
+    }
+    
+    return batchResult, nil
+}
+
+// ==================== 批量磁盘创建 ====================
+
+// BatchCreateDiskRequest 批量创建磁盘请求
+type BatchCreateDiskRequest struct {
+    VMID         string             `json:"vm_id"`
+    DiskRequests []*CreateDiskRequest `json:"disk_requests"`
+}
+
+// BatchCreateDiskSaga 批量创建磁盘SAGA编排
+func (s *StorageService) BatchCreateDiskSaga(ctx context.Context, req *BatchCreateDiskRequest) error {
+    wfName := fmt.Sprintf("batch_create_disk_%s", req.VMID)
+    
+    return workflow.Register(wfName, func(wf *workflow.Workflow, data []byte) error {
+        createdDisks := make([]string, 0, len(req.DiskRequests))
+        
+        // 串行创建磁盘(避免存储压力)
+        for i, diskReq := range req.DiskRequests {
+            branchName := fmt.Sprintf("create_disk_%d", i)
+            
+            wf.NewBranch().OnRollback(func(bb *dtmcli.BranchBarrier) error {
+                // 补偿:删除已创建的磁盘
+                for _, diskID := range createdDisks {
+                    _ = s.DeleteDisk(ctx, diskID)
+                }
+                return nil
+            })
+            
+            disk, err := s.CreateDisk(wf.Context, diskReq)
+            if err != nil {
+                return fmt.Errorf("创建磁盘 %s 失败: %w", branchName, err)
+            }
+            
+            createdDisks = append(createdDisks, disk.DiskID)
+        }
+        
+        // 更新虚拟机磁盘列表
+        return s.UpdateVMDisks(wf.Context, req.VMID, createdDisks)
+    })
+}
+```
+
+**批量操作性能优化**:
+
+1. **并发控制**:通过工作池限制并发数,避免资源耗尽
+2. **快速失败**:可选的 fail-fast 模式,减少无效操作
+3. **结果流式返回**:大批量操作可通过 WebSocket 实时推送进度
+4. **分批提交**:超大批量(>100)自动拆分为多个子批次
+
+### 3.4 简单操作直调场景
+
+以下操作复杂度低,**无需 SAGA 编排**,直接调用即可:
+
+| 操作      | 实现方式               | 幂等性           | 错误处理     |
+| ------- | ------------------ | ------------- | -------- |
+| 虚拟机启动   | QMP `cont` 命令      | 检查状态防重复启动     | 失败直接返回错误 |
+| 虚拟机停止   | QMP `stop` 命令      | 检查状态防重复停止     | 失败直接返回错误 |
+| 虚拟机重启   | QMP `system_reset` | 无副作用,天然幂等     | 失败直接返回错误 |
+| 状态查询    | QMP `query-status` | 只读操作,天然幂等     | 失败重试 3 次 |
+| CPU 热插拔 | QMP `device_add`   | 检查 CPU ID 防重复 | 失败直接返回错误 |
+| 内存热插拔   | QMP `object-add`   | 检查内存块 ID 防重复  | 失败直接返回错误 |
+
+**示例代码**:
+
+```go
+// StartVM 启动虚拟机(简单操作,无需SAGA)
+func (s *VMService) StartVM(ctx context.Context, vmID string) error {
+    // 获取虚拟机信息
+    vm, err := s.vmRepo.Get(ctx, vmID)
+    if err != nil {
+        return err
+    }
+    
+    // 幂等性检查
+    if vm.Status == "running" {
+        return nil // 已启动,直接返回成功
+    }
+    
+    if vm.Status != "stopped" {
+        return ErrInvalidVMState
+    }
+    
+    // 连接QMP
+    qmpClient := s.qmpManager.Get(vmID)
+    if qmpClient == nil {
+        return ErrQMPNotConnected
+    }
+    
+    // 执行启动命令
+    if err := qmpClient.Continue(ctx); err != nil {
+        return fmt.Errorf("启动虚拟机失败: %w", err)
+    }
+    
+    // 更新状态
+    return s.vmRepo.UpdateStatus(ctx, vmID, "running")
+}
+
+// StopVM 停止虚拟机(简单操作,无需SAGA)
+func (s *VMService) StopVM(ctx context.Context, vmID string) error {
+    vm, err := s.vmRepo.Get(ctx, vmID)
+    if err != nil {
+        return err
+    }
+    
+    // 幂等性检查
+    if vm.Status == "stopped" {
+        return nil
+    }
+    
+    if vm.Status != "running" {
+        return ErrInvalidVMState
+    }
+    
+    qmpClient := s.qmpManager.Get(vmID)
+    if qmpClient == nil {
+        return ErrQMPNotConnected
+    }
+    
+    // 执行停止命令
+    if err := qmpClient.Stop(ctx); err != nil {
+        return fmt.Errorf("停止虚拟机失败: %w", err)
+    }
+    
+    return s.vmRepo.UpdateStatus(ctx, vmID, "stopped")
+}
+```
+
+## 四、外部依赖容错设计
+
+### 4.1 存储服务异常处理
+
+```mermaid
+graph TB
+    subgraph 存储服务调用[存储服务调用（Storage Service Call）]
+        REQ[业务请求] --> CB[熔断器<br/>（Circuit Breaker）]
+        CB --> RT[重试器<br/>（Retrier）]
+        RT --> STORE[存储服务<br/>（Storage Service）]
+    end
+    
+    subgraph 熔断器状态机[熔断器状态机（Circuit Breaker FSM）]
+        CLOSED[关闭状态<br/>（Closed）] -->|连续失败5次| OPEN[打开状态<br/>（Open）]
+        OPEN -->|等待30秒| HALF[半开状态<br/>（Half-Open）]
+        HALF -->|成功| CLOSED
+        HALF -->|失败| OPEN
+    end
+    
+    subgraph 降级策略[降级策略（Fallback Strategy）]
+        OPEN --> FB1[返回缓存数据]
+        OPEN --> FB2[返回默认值]
+        OPEN --> FB3[快速失败]
+    end
+    
+    style 存储服务调用 fill:#E3F2FD
+    style 熔断器状态机 fill:#FFF3E0
+    style 降级策略 fill:#FFE0E0
+```
+
+**实现代码**:
+
+```go
+// StorageServiceWrapper 存储服务包装器(带熔断和重试)
+type StorageServiceWrapper struct {
+    client         *StorageClient
+    circuitBreaker *gobreaker.CircuitBreaker
+    retryConfig    *RetryConfig
+}
+
+// CreateDiskWithFaultTolerance 容错的磁盘创建
+func (w *StorageServiceWrapper) CreateDiskWithFaultTolerance(ctx context.Context, req *CreateDiskRequest) (*Disk, error) {
+    // 包装为熔断器执行
+    result, err := w.circuitBreaker.Execute(func() (interface{}, error) {
+        // 带重试的实际调用
+        return w.createDiskWithRetry(ctx, req)
+    })
+    
+    if err != nil {
+        // 熔断器打开,触发降级
+        if err == gobreaker.ErrOpenState {
+            return nil, ErrStorageServiceUnavailable
+        }
+        return nil, err
+    }
+    
+    return result.(*Disk), nil
+}
+
+// createDiskWithRetry 带重试的磁盘创建
+func (w *StorageServiceWrapper) createDiskWithRetry(ctx context.Context, req *CreateDiskRequest) (*Disk, error) {
+    var lastErr error
+    
+    for attempt := 0; attempt < w.retryConfig.MaxAttempts; attempt++ {
+        if attempt > 0 {
+            // 指数退避
+            backoff := w.retryConfig.InitialBackoff * time.Duration(1<<uint(attempt-1))
+            if backoff > w.retryConfig.MaxBackoff {
+                backoff = w.retryConfig.MaxBackoff
+            }
+            
+            select {
+            case <-ctx.Done():
+                return nil, ctx.Err()
+            case <-time.After(backoff):
+            }
+        }
+        
+        disk, err := w.client.CreateDisk(ctx, req)
+        if err == nil {
+            return disk, nil
+        }
+        
+        lastErr = err
+        
+        // 判断是否可重试
+        if !w.isRetryableError(err) {
+            return nil, err
+        }
+    }
+    
+    return nil, fmt.Errorf("重试 %d 次后仍失败: %w", w.retryConfig.MaxAttempts, lastErr)
+}
+
+// isRetryableError 判断错误是否可重试
+func (w *StorageServiceWrapper) isRetryableError(err error) bool {
+    // 网络超时、服务不可用等临时性错误可重试
+    retryableErrors := []error{
+        ErrNetworkTimeout,
+        ErrServiceUnavailable,
+        ErrTooManyRequests,
+    }
+    
+    for _, retryableErr := range retryableErrors {
+        if errors.Is(err, retryableErr) {
+            return true
+        }
+    }
+    
+    return false
+}
+```
+
+### 4.2 网络服务异常处理
+
+网络服务异常的容错策略:
+
+1. **异步修复**:网络配置失败不阻塞虚拟机创建,标记为"网络未就绪"状态
+2. **后台重试**:专门的网络协调器(Network Reconciler)周期性修复异常网络
+3. **用户通知**:异常状态通过事件总线通知用户
+
+```go
+// NetworkReconciler 网络协调器
+type NetworkReconciler struct {
+    networkService *NetworkService
+    vmRepo         *VMRepository
+    interval       time.Duration
+}
+
+// Run 启动协调器
+func (r *NetworkReconciler) Run(ctx context.Context) {
+    ticker := time.NewTicker(r.interval)
+    defer ticker.Stop()
+    
+    for {
+        select {
+        case <-ctx.Done():
+            return
+        case <-ticker.C:
+            r.reconcile(ctx)
+        }
+    }
+}
+
+// reconcile 协调网络状态
+func (r *NetworkReconciler) reconcile(ctx context.Context) {
+    // 查找网络未就绪的虚拟机
+    vms, err := r.vmRepo.FindByNetworkStatus(ctx, "not_ready")
+    if err != nil {
+        return
+    }
+    
+    for _, vm := range vms {
+        // 重试配置网络
+        nicID := generateNICID(vm.VMID)
+        _, err := r.networkService.GetNIC(ctx, nicID)
+        
+        if err == nil {
+            // 网络已恢复,更新状态
+            _ = r.vmRepo.UpdateNetworkStatus(ctx, vm.VMID, "ready")
+        } else {
+            // 继续重试创建
+            nicReq := &CreateNICRequest{
+                NICID:     nicID,
+                VMID:      vm.VMID,
+                NetworkID: vm.NetworkID,
+                PMID:      vm.PMID,
+            }
+            
+            _, _ = r.networkService.CreateNIC(ctx, nicReq)
+        }
+    }
+}
+```
+
+### 4.3 DTM 故障恢复机制
+
+DTM 支持高可用部署,故障恢复流程:
+
+```mermaid
+sequenceDiagram
+    participant APP as 应用服务
+    participant DTM1 as DTM主节点
+    participant DTM2 as DTM备节点
+    participant MYSQL as MySQL
+    
+    APP->>DTM1: 1. 提交SAGA事务
+    DTM1->>MYSQL: 2. 持久化事务日志
+    MYSQL-->>DTM1: 写入成功
+    
+    Note over DTM1: DTM主节点宕机
+    
+    DTM2->>DTM2: 3. 检测到主节点失败
+    DTM2->>MYSQL: 4. 查询未完成事务
+    MYSQL-->>DTM2: 返回事务列表
+    
+    DTM2->>DTM2: 5. 重建事务状态机
+    DTM2->>APP: 6. 继续执行未完成事务
+    APP-->>DTM2: 执行成功
+    
+    DTM2->>MYSQL: 7. 更新事务状态
+    MYSQL-->>DTM2: 更新成功
+```
+
+**故障恢复代码**:
+
+```go
+// DTMFailoverHandler DTM故障转移处理器
+type DTMFailoverHandler struct {
+    dtmClient      *dtmcli.Client
+    healthChecker  *HealthChecker
+    failoverConfig *FailoverConfig
+}
+
+// MonitorAndFailover 监控并执行故障转移
+func (h *DTMFailoverHandler) MonitorAndFailover(ctx context.Context) {
+    ticker := time.NewTicker(h.failoverConfig.CheckInterval)
+    defer ticker.Stop()
+    
+    for {
+        select {
+        case <-ctx.Done():
+            return
+        case <-ticker.C:
+            if !h.healthChecker.IsHealthy(h.dtmClient.GetPrimaryEndpoint()) {
+                h.executeFailover(ctx)
+            }
+        }
+    }
+}
+
+// executeFailover 执行故障转移
+func (h *DTMFailoverHandler) executeFailover(ctx context.Context) error {
+    // 1. 切换到备节点
+    backupEndpoint := h.failoverConfig.BackupEndpoints[0]
+    h.dtmClient.SwitchEndpoint(backupEndpoint)
+    
+    // 2. 等待新主节点就绪
+    if err := h.waitForReady(ctx, backupEndpoint, 30*time.Second); err != nil {
+        return err
+    }
+    
+    // 3. 恢复未完成事务(由DTM自动处理)
+    // DTM会从MySQL读取事务日志并继续执行
+    
+    return nil
+}
+```
+
+## 五、参考资料
+
+[1] Red Hat. "KVM Performance Optimization Guide". [https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux/8/html/configuring_and_managing_virtualization/optimizing-virtual-machine-performance-in-rhel_configuring-and-managing-virtualization](https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux/8/html/configuring_and_managing_virtualization/optimizing-virtual-machine-performance-in-rhel_configuring-and-managing-virtualization)
+
+[2] DTM Labs. "DTM Performance Benchmark". [https://github.com/dtm-labs/dtm-labs.github.io/blob/main/blogs/bench.md](https://github.com/dtm-labs/dtm-labs.github.io/blob/main/blogs/bench.md)
+
+[3] QEMU Project. "QMP Protocol Specification". [https://qemu.readthedocs.io/en/latest/interop/qmp-spec.html](https://qemu.readthedocs.io/en/latest/interop/qmp-spec.html)
+
+[4] QEMU Documentation. "Live Migration Protocol". [https://qemu.readthedocs.io/en/latest/devel/migration.html](https://qemu.readthedocs.io/en/latest/devel/migration.html)
 
 ---
 
-## 八、参考资料
-
-* [1] 分布式事务性能对比研究，清华大学分布式系统实验室，2023
-* [2] DTM 官方性能测试报告：[https://dtm.pub/performance/benchmark.html](https://dtm.pub/performance/benchmark.html)
-* [3] QEMU QMP 协议规范：[https://qemu.readthedocs.io/en/latest/interop/qmp-spec.html](https://qemu.readthedocs.io/en/latest/interop/qmp-spec.html)
-* [4] QEMU Live Migration 实现原理：[https://wiki.qemu.org/Features/LiveMigration](https://wiki.qemu.org/Features/LiveMigration)
-* [5] Proxmox 架构分析：[https://pve.proxmox.com/wiki/Developer_Documentation](https://pve.proxmox.com/wiki/Developer_Documentation)
-* [6] etcd Raft 一致性协议：[https://etcd.io/docs/v3.5/learning/design-raft/](https://etcd.io/docs/v3.5/learning/design-raft/)
-* [7] Ceph RBD 性能优化最佳实践：[https://docs.ceph.com/en/latest/rbd/rbd-config-ref/](https://docs.ceph.com/en/latest/rbd/rbd-config-ref/)
+*本文档版本: v1.0*
+*最后更新: 2026-01-28*
