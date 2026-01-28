@@ -1703,10 +1703,10 @@ func (h *DTMFailoverHandler) executeFailover(ctx context.Context) error {
 
 ## 五、参考资料
 
-*[1] Red Hat. "KVM Performance Optimization Guide". [https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux/8/html/configuring_and_managing_virtualization/optimizing-virtual-machine-performance-in-rhel_configuring-and-managing-virtualization](https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux/8/html/configuring_and_managing_virtualization/optimizing-virtual-machine-performance-in-rhel_configuring-and-managing-virtualization)
-*[2] DTM Labs. "DTM Performance Benchmark". [https://github.com/dtm-labs/dtm-labs.github.io/blob/main/blogs/bench.md](https://github.com/dtm-labs/dtm-labs.github.io/blob/main/blogs/bench.md)
-*[3] QEMU Project. "QMP Protocol Specification". [https://qemu.readthedocs.io/en/latest/interop/qmp-spec.html](https://qemu.readthedocs.io/en/latest/interop/qmp-spec.html)
-*[4] QEMU Documentation. "Live Migration Protocol". [https://qemu.readthedocs.io/en/latest/devel/migration.html](https://qemu.readthedocs.io/en/latest/devel/migration.html)
+* [1] Red Hat. "KVM Performance Optimization Guide". [https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux/8/html/configuring_and_managing_virtualization/optimizing-virtual-machine-performance-in-rhel_configuring-and-managing-virtualization](https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux/8/html/configuring_and_managing_virtualization/optimizing-virtual-machine-performance-in-rhel_configuring-and-managing-virtualization)
+* [2] DTM Labs. "DTM Performance Benchmark". [https://github.com/dtm-labs/dtm-labs.github.io/blob/main/blogs/bench.md](https://github.com/dtm-labs/dtm-labs.github.io/blob/main/blogs/bench.md)
+* [3] QEMU Project. "QMP Protocol Specification". [https://qemu.readthedocs.io/en/latest/interop/qmp-spec.html](https://qemu.readthedocs.io/en/latest/interop/qmp-spec.html)
+* [4] QEMU Documentation. "Live Migration Protocol". [https://qemu.readthedocs.io/en/latest/devel/migration.html](https://qemu.readthedocs.io/en/latest/devel/migration.html)
 
 ---
 
